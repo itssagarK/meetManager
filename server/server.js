@@ -190,7 +190,7 @@ app.delete('/api/meetings/:id', (req, res) => {
 if (isProduction) {
   const clientDist = path.join(__dirname, '../client/dist');
   app.use(express.static(clientDist));
-  app.get('*', (req, res) => {
+  app.use((req, res) => {
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 }
