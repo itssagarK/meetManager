@@ -32,7 +32,7 @@ body {
   background-color: var(--white);
 }
 
-/* Header */
+/* header */
 .app-header {
   display: flex;
   justify-content: space-between;
@@ -56,7 +56,7 @@ body {
   gap: 10px;
 }
 
-/* Stats */
+/* metrics */
 .stats-bar {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -91,7 +91,7 @@ body {
   color: var(--blue);
 }
 
-/* Controls */
+/* controls */
 .controls-bar {
   display: flex;
   gap: 12px;
@@ -151,7 +151,7 @@ body {
   border-color: var(--blue);
 }
 
-/* ================= CALENDAR LAYOUT ================= */
+/* calendar layout */
 .calendar-layout {
   display: grid;
   grid-template-columns: 380px 1fr;
@@ -240,7 +240,7 @@ body {
   color: var(--blue);
 }
 
-/* Day Tasks Pane */
+/* day tasks */
 .date-tasks-pane {
   background: var(--white);
   border: 1px solid var(--border);
@@ -299,7 +299,6 @@ body {
 
 .task-title { margin: 0 0 8px; font-size: 17px; font-weight: 700; color: var(--black); }
 
-/* PRIORITIZED DISCUSSION BOX */
 .task-discussion-box {
   margin: 10px 0;
   background: var(--input-bg);
@@ -339,7 +338,7 @@ body {
   justify-content: center;
 }
 
-/* ================= TABLE VIEW ================= */
+/* table view */
 .table-wrapper {
   background: var(--white);
   border: 1px solid var(--border);
@@ -394,7 +393,7 @@ body {
 }
 .table-empty { text-align: center; padding: 40px; color: var(--black); }
 
-/* ================= CARDS VIEW ================= */
+/* cards view */
 .meetings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -440,7 +439,7 @@ body {
 }
 .actions-right { display: flex; gap: 8px; }
 
-/* ================= SLIDE-OUT SIDE DRAWER ================= */
+/* drawer */
 .drawer-overlay {
   position: fixed;
   inset: 0;
@@ -515,7 +514,6 @@ body {
   font-size: 14px;
 }
 
-/* Light Background Inputs */
 .drawer-form input,
 .drawer-form select,
 .drawer-form textarea {
@@ -544,7 +542,7 @@ body {
   border-top: 1px solid var(--border);
 }
 
-/* Buttons */
+/* buttons */
 .btn {
   padding: 9px 18px;
   border-radius: 6px;
@@ -598,7 +596,7 @@ body {
   color: var(--black);
 }
 
-/* ================= MOBILE RESPONSIVE OVERHAUL ================= */
+/* mobile responsive */
 @media (max-width: 680px) {
   .app-container {
     padding: 16px 12px;
@@ -621,7 +619,6 @@ body {
     text-align: center;
   }
 
-  /* 2x2 grid for stats on phone */
   .stats-bar {
     grid-template-columns: repeat(2, 1fr);
     gap: 10px;
@@ -635,7 +632,6 @@ body {
     font-size: 20px;
   }
 
-  /* Segmented view controls on phone */
   .controls-bar {
     flex-direction: column;
     align-items: stretch;
@@ -664,7 +660,6 @@ body {
     padding: 8px 4px;
   }
 
-  /* Full-width drawer on phones */
   .drawer-panel {
     max-width: 100%;
     width: 100%;
@@ -693,4 +688,3 @@ body {
     font-size: 12px;
   }
 }
-

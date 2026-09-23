@@ -19,7 +19,6 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [serverOnline, setServerOnline] = useState(false);
 
-  // View mode: 'calendar' | 'table' | 'cards'
   const [viewMode, setViewMode] = useState('calendar');
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
@@ -27,7 +26,6 @@ function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
 
-  // Slide-out Drawer State
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [formData, setFormData] = useState(initialFormData);
@@ -52,12 +50,10 @@ function App() {
     fetchMeetings();
   }, []);
 
-  // Quick helper: Schedule Saturday Townhall at 11:00 PM for selected date or next Saturday
   const handleAddSaturdayTownhall = () => {
     let targetDate = selectedDate;
     const dateObj = new Date(targetDate);
     if (dateObj.getDay() !== 6) {
-      // Find the upcoming Saturday
       const daysUntilSaturday = (6 - dateObj.getDay() + 7) % 7 || 7;
       dateObj.setDate(dateObj.getDate() + daysUntilSaturday);
       targetDate = dateObj.toISOString().split('T')[0];
@@ -127,7 +123,7 @@ function App() {
       handleCloseDrawer();
       fetchMeetings();
     } catch (err) {
-      alert('Could not reach backend server. Please verify "node server.js" is running.');
+      alert('Could not reach backend server. Please verify the server is running.');
     }
   };
 
@@ -155,7 +151,7 @@ function App() {
     }
   };
 
-  // Calendar calculations (Pure JS)
+  // calendar calculations
   const calYear = currentCalendarDate.getFullYear();
   const calMonth = currentCalendarDate.getMonth();
   const firstDayIndex = new Date(calYear, calMonth, 1).getDay();
@@ -189,11 +185,11 @@ function App() {
 
   return (
     <div className="app-container">
-      {/* Header */}
+      {/* header */}
       <header className="app-header">
         <div>
           <h1>MeetManager</h1>
-          <p className="subtitle">Meeting agenda, task priorities, and schedule tracking</p>
+          <p className="subtitle">Keep track of meetings and action items</p>
         </div>
         <div className="header-actions">
           <button className="btn btn-secondary" onClick={handleAddSaturdayTownhall}>
@@ -205,7 +201,7 @@ function App() {
         </div>
       </header>
 
-      {/* Metrics Bar */}
+      {/* metrics summary */}
       <div className="stats-bar">
         <div className="stat-card">
           <span className="stat-label">Total Meetings</span>
@@ -227,7 +223,7 @@ function App() {
         </div>
       </div>
 
-      {/* Controls Bar */}
+      {/* view controls & filters */}
       <div className="controls-bar">
         <div className="view-toggle">
           <button
@@ -271,7 +267,7 @@ function App() {
         </div>
       </div>
 
-      {/* ----------------- CALENDAR VIEW ----------------- */}
+      {/* calendar view */}
       {viewMode === 'calendar' && (
         <div className="calendar-layout">
           <div className="calendar-widget">
@@ -322,7 +318,7 @@ function App() {
             </div>
           </div>
 
-          {/* Selected Date Pane */}
+          {/* day schedule pane */}
           <div className="date-tasks-pane">
             <div className="pane-header">
               <div>
@@ -354,7 +350,6 @@ function App() {
 
                       <h4 className="task-title">{meeting.title}</h4>
 
-                      {/* PRIORITIZED KEY DISCUSSION SECTION */}
                       {meeting.notes && (
                         <div className="task-discussion-box">
                           <div className="discussion-heading">Key Discussion & Action Items:</div>
@@ -406,7 +401,7 @@ function App() {
         </div>
       )}
 
-      {/* ----------------- TABLE VIEW ----------------- */}
+      {/* table view */}
       {viewMode === 'table' && (
         <div className="table-wrapper">
           <table className="meetings-table">
@@ -478,7 +473,7 @@ function App() {
         </div>
       )}
 
-      {/* ----------------- CARDS VIEW ----------------- */}
+      {/* cards view */}
       {viewMode === 'cards' && (
         <div className="meetings-grid">
           {filteredMeetings.length === 0 ? (
@@ -493,7 +488,6 @@ function App() {
 
                 <h3 className="card-title">{meeting.title}</h3>
 
-                {/* PRIORITIZED KEY DISCUSSION */}
                 {meeting.notes && (
                   <div className="task-discussion-box">
                     <div className="discussion-heading">Key Discussion & Action Items:</div>
@@ -548,7 +542,7 @@ function App() {
         </div>
       )}
 
-      {/* ----------------- SLIDE-OUT SIDE DRAWER ----------------- */}
+      {/* slide-out drawer */}
       {isDrawerOpen && (
         <div className="drawer-overlay" onClick={handleCloseDrawer}>
           <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
@@ -571,7 +565,6 @@ function App() {
                 />
               </div>
 
-              {/* PRIORITIZED KEY DISCUSSION AT THE TOP */}
               <div className="form-group">
                 <label className="label-bold">Key Discussion & Action Items *</label>
                 <textarea

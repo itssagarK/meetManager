@@ -16,7 +16,6 @@ app.use(express.json());
 
 const db = new Database('meetings.db');
 
-// Create table
 db.exec(`
   CREATE TABLE IF NOT EXISTS meetings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,16 +31,13 @@ db.exec(`
   )
 `);
 
-// Migration helper: add priority column if table existed without it
 try {
   db.exec("ALTER TABLE meetings ADD COLUMN priority TEXT DEFAULT 'Medium'");
 } catch (e) {
-  // Column already exists
+  // column already exists
 }
 
-// -------------------------------------------------------------
-// DEMO DATA ISOLATION (Only runs in development, NEVER in production!)
-// -------------------------------------------------------------
+// seed townhall meetings for local testing
 const shouldSeedDemo = process.env.SEED_DEMO_DATA === 'true' || (!isProduction && process.env.SEED_DEMO_DATA !== 'false');
 
 if (shouldSeedDemo) {
@@ -57,11 +53,8 @@ if (shouldSeedDemo) {
       SET attendees = 'Sagar (Host), Vikram Malhotra, Neha Patel, All Hands'
       WHERE title = 'Saturday Townhall'
     `).run();
-  } catch (e) {
-    // Ignore migration check
-  }
+  } catch (e) {}
 
-  // Helper: Seed upcoming Saturday Townhalls for local development/testing
   const insertStmt = db.prepare(`
     INSERT INTO meetings (title, date, time, link, attendees, notes, priority, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -92,9 +85,7 @@ if (shouldSeedDemo) {
   }
 }
 
-// -------------------------------------------------------------
-// CRUD API Routes
-// -------------------------------------------------------------
+// routes
 app.get('/api/meetings', (req, res) => {
   try {
     const meetings = db.prepare('SELECT * FROM meetings ORDER BY date ASC, time ASC').all();
@@ -184,9 +175,7 @@ app.delete('/api/meetings/:id', (req, res) => {
   }
 });
 
-// -------------------------------------------------------------
-// SERVE PRODUCTION CLIENT
-// -------------------------------------------------------------
+// serve frontend in production
 if (isProduction) {
   const clientDist = path.join(__dirname, '../client/dist');
   app.use(express.static(clientDist));
@@ -195,7 +184,6 @@ if (isProduction) {
   });
 }
 
-// Listen on 0.0.0.0 so both local devices (phones on WiFi) and cloud platforms can connect
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Meeting Manager Server running on port ${PORT} (mode: ${isProduction ? 'production' : 'development'})`);
+  console.log(`Server running on port ${PORT}`);
 });
