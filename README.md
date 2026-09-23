@@ -1,4 +1,4 @@
- MeetManager
+## MeetManager
 
 A clean, responsive full-stack meeting and agenda management application designed for busy professionals to schedule meetings, prioritize key discussions, and track tasks.
 **Live Demo:** [https://meetmanager-p55v.onrender.com](https://meetmanager-p55v.onrender.com)
