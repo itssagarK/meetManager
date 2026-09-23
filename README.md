@@ -1,13 +1,11 @@
-# 📅 MeetManager
+ MeetManager
 
 A clean, responsive full-stack meeting and agenda management application designed for busy professionals to schedule meetings, prioritize key discussions, and track tasks.
-
-🔗 **Live Demo:** [https://meetmanager-p55v.onrender.com](https://meetmanager-p55v.onrender.com)
+**Live Demo:** [https://meetmanager-p55v.onrender.com](https://meetmanager-p55v.onrender.com)
 
 ---
 
-## ✨ Key Features
-
+##  Key Features
 - **Interactive Calendar**: Custom calendar to click any date and view daily tasks.
 - **High-Density Table & Cards**: Rapid scanning of all meetings, links, and attendees.
 - **Key Discussion Prioritization**: Dedicated agenda and action item tracker for every meeting.
@@ -16,7 +14,7 @@ A clean, responsive full-stack meeting and agenda management application designe
 
 ---
 
-## 🛠️ Tech Stack
+##  Tech Stack
 
 - **Frontend**: React 19, Vite, Custom CSS
 - **Backend**: Node.js (ES Modules), Express.js (v5), CORS
@@ -25,7 +23,7 @@ A clean, responsive full-stack meeting and agenda management application designe
 
 ---
 
-## 🚀 Local Setup
+## Local Setup
 
 1. **Clone the repository:**
    ```bash
