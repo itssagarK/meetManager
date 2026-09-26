@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App.css';
 
 const API_URL = '/api/meetings';
@@ -7,39 +7,41 @@ const initialFormData = {
   title: '',
   date: new Date().toISOString().split('T')[0],
   time: '10:00 AM',
+  priority: 'High',
+  status: 'Pending',
+  notes: '',
   link: '',
   attendees: '',
-  notes: '',
-  priority: 'High',
-  status: 'Upcoming',
 };
 
+const priorityOrder = { High: 1, Medium: 2, Low: 3 };
+
 function App() {
-  const [meetings, setMeetings] = useState([]);
+  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [serverOnline, setServerOnline] = useState(false);
-
-  const [viewMode, setViewMode] = useState('calendar');
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
-  const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
-
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
+  const [typeFilter, setTypeFilter] = useState('All'); // 'All' | 'task' | 'meeting'
+  const [viewMode, setViewMode] = useState('calendar'); // 'calendar' | 'table' | 'cards'
+  const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
 
+  // Drawer Form State
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [formType, setFormType] = useState('task'); // 'task' | 'meeting'
   const [editingId, setEditingId] = useState(null);
   const [formData, setFormData] = useState(initialFormData);
 
-  const fetchMeetings = async () => {
+  const fetchItems = async () => {
     try {
-      setLoading(true);
       const res = await fetch(API_URL);
       if (!res.ok) throw new Error('Network error');
       const data = await res.json();
-      setMeetings(data);
+      setItems(data);
       setServerOnline(true);
     } catch (err) {
-      console.error('Failed to load meetings:', err);
+      console.error('Error fetching items:', err);
       setServerOnline(false);
     } finally {
       setLoading(false);
@@ -47,52 +49,52 @@ function App() {
   };
 
   useEffect(() => {
-    fetchMeetings();
+    fetchItems();
   }, []);
 
-  const handleAddSaturdayTownhall = () => {
-    let targetDate = selectedDate;
-    const dateObj = new Date(targetDate);
-    if (dateObj.getDay() !== 6) {
-      const daysUntilSaturday = (6 - dateObj.getDay() + 7) % 7 || 7;
-      dateObj.setDate(dateObj.getDate() + daysUntilSaturday);
-      targetDate = dateObj.toISOString().split('T')[0];
-    }
-
+  const handleOpenCreateTask = (prefillDate = null) => {
     setEditingId(null);
-    setFormData({
-      title: 'Saturday Townhall',
-      date: targetDate,
-      time: '11:00 PM',
-      link: 'https://meet.google.com/townhall',
-      attendees: 'Sagar (Host), Vikram Malhotra, Neha Patel, All Hands',
-      notes: 'Weekly townhall: Review milestones, key achievements, deliverables, and open Q&A.',
-      priority: 'High',
-      status: 'Upcoming',
-    });
-    setIsDrawerOpen(true);
-  };
-
-  const handleOpenCreate = (prefillDate = null) => {
-    setEditingId(null);
+    setFormType('task');
     setFormData({
       ...initialFormData,
+      title: '',
       date: prefillDate || selectedDate || initialFormData.date,
+      time: '10:00 AM',
+      priority: 'High',
+      link: '',
+      attendees: '',
     });
     setIsDrawerOpen(true);
   };
 
-  const handleOpenEdit = (meeting) => {
-    setEditingId(meeting.id);
+  const handleOpenCreateMeeting = (prefillDate = null) => {
+    setEditingId(null);
+    setFormType('meeting');
     setFormData({
-      title: meeting.title,
-      date: meeting.date,
-      time: meeting.time,
-      link: meeting.link || '',
-      attendees: meeting.attendees || '',
-      notes: meeting.notes || '',
-      priority: meeting.priority || 'Medium',
-      status: meeting.status || 'Upcoming',
+      ...initialFormData,
+      title: '',
+      date: prefillDate || selectedDate || initialFormData.date,
+      time: '02:00 PM',
+      priority: 'Medium',
+      link: 'https://meet.google.com/',
+      attendees: 'Sagar (Host), Team',
+    });
+    setIsDrawerOpen(true);
+  };
+
+  const handleOpenEdit = (item) => {
+    const isMeeting = Boolean(item.link || (item.attendees && item.attendees.trim() !== ''));
+    setEditingId(item.id);
+    setFormType(isMeeting ? 'meeting' : 'task');
+    setFormData({
+      title: item.title,
+      date: item.date,
+      time: item.time,
+      priority: item.priority || 'Medium',
+      status: item.status === 'Completed' ? 'Completed' : 'Pending',
+      notes: item.notes || '',
+      link: item.link || '',
+      attendees: item.attendees || '',
     });
     setIsDrawerOpen(true);
   };
@@ -116,114 +118,147 @@ function App() {
 
       if (!res.ok) {
         const errorData = await res.json();
-        alert(`Error: ${errorData.error || 'Failed to save meeting'}`);
+        alert(`Error: ${errorData.error || 'Failed to save'}`);
         return;
       }
 
+      await fetchItems();
       handleCloseDrawer();
-      fetchMeetings();
     } catch (err) {
-      alert('Could not reach backend server. Please verify the server is running.');
+      console.error('Save error:', err);
+      alert('Failed to connect to backend server.');
     }
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this meeting?')) return;
+    if (!window.confirm('Are you sure you want to delete this item?')) return;
     try {
-      await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
-      fetchMeetings();
+      const res = await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to delete item');
+      await fetchItems();
     } catch (err) {
-      console.error('Error deleting meeting:', err);
+      console.error('Delete error:', err);
+      alert('Failed to delete item.');
     }
   };
 
-  const handleToggleStatus = async (meeting) => {
-    const nextStatus = meeting.status === 'Completed' ? 'Upcoming' : 'Completed';
+  const handleToggleStatus = async (item) => {
+    const nextStatus = item.status === 'Completed' ? 'Pending' : 'Completed';
     try {
-      await fetch(`${API_URL}/${meeting.id}`, {
+      const res = await fetch(`${API_URL}/${item.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...meeting, status: nextStatus }),
+        body: JSON.stringify({ ...item, status: nextStatus }),
       });
-      fetchMeetings();
+      if (!res.ok) throw new Error('Failed to update status');
+      await fetchItems();
     } catch (err) {
-      console.error('Error updating status:', err);
+      console.error('Update status error:', err);
+      alert('Failed to update status.');
     }
   };
 
-  // calendar calculations
+  // Calendar calculations
   const calYear = currentCalendarDate.getFullYear();
   const calMonth = currentCalendarDate.getMonth();
   const firstDayIndex = new Date(calYear, calMonth, 1).getDay();
   const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
-  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
 
   const handlePrevMonth = () => setCurrentCalendarDate(new Date(calYear, calMonth - 1, 1));
   const handleNextMonth = () => setCurrentCalendarDate(new Date(calYear, calMonth + 1, 1));
 
-  const meetingsByDate = meetings.reduce((acc, m) => {
-    if (!acc[m.date]) acc[m.date] = [];
-    acc[m.date].push(m);
+  // Map items by date
+  const itemsByDate = items.reduce((acc, it) => {
+    if (!acc[it.date]) acc[it.date] = [];
+    acc[it.date].push(it);
     return acc;
   }, {});
 
-  const filteredMeetings = meetings.filter((m) => {
-    const matchesSearch =
-      m.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (m.attendees && m.attendees.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (m.notes && m.notes.toLowerCase().includes(searchTerm.toLowerCase()));
+  // Filtered and sorted list
+  const filteredAndSortedItems = items
+    .filter((it) => {
+      const isMeeting = Boolean(it.link || (it.attendees && it.attendees.trim() !== ''));
+      const itType = isMeeting ? 'meeting' : 'task';
 
-    const matchesStatus = statusFilter === 'All' || m.status === statusFilter;
-    const matchesDate = viewMode === 'calendar' && selectedDate ? m.date === selectedDate : true;
+      const matchesSearch =
+        it.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (it.notes && it.notes.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (it.attendees && it.attendees.toLowerCase().includes(searchTerm.toLowerCase()));
 
-    return matchesSearch && matchesStatus && matchesDate;
-  });
+      const isCompleted = it.status === 'Completed';
+      const matchesStatus =
+        statusFilter === 'All'
+          ? true
+          : statusFilter === 'Completed'
+          ? isCompleted
+          : !isCompleted;
 
-  const totalCount = meetings.length;
-  const upcomingCount = meetings.filter((m) => m.status === 'Upcoming').length;
-  const completedCount = meetings.filter((m) => m.status === 'Completed').length;
+      const matchesType = typeFilter === 'All' || itType === typeFilter;
+      const matchesDate = viewMode === 'calendar' && selectedDate ? it.date === selectedDate : true;
+
+      return matchesSearch && matchesStatus && matchesType && matchesDate;
+    })
+    .sort((a, b) => {
+      const pA = priorityOrder[a.priority] || 2;
+      const pB = priorityOrder[b.priority] || 2;
+      if (pA !== pB) return pA - pB;
+      return (a.time || '').localeCompare(b.time || '');
+    });
+
+  const totalCount = items.length;
+  const highPriorityCount = items.filter((it) => it.priority === 'High' && it.status !== 'Completed').length;
+  const meetingCount = items.filter((it) => it.link || (it.attendees && it.attendees.trim() !== '')).length;
+  const pendingCount = items.filter((it) => it.status !== 'Completed').length;
 
   return (
     <div className="app-container">
-      {/* header */}
+      {/* Header */}
       <header className="app-header">
         <div>
-          <h1>MeetManager</h1>
-          <p className="subtitle">Keep track of meetings and action items</p>
+          <h1>Task & Meeting Manager</h1>
+          <p className="subtitle">Manage tasks and schedule meetings by priority and time</p>
         </div>
         <div className="header-actions">
-          <button className="btn btn-secondary" onClick={handleAddSaturdayTownhall}>
-            + Saturday Townhall (11:00 PM)
+          <button className="btn btn-outline" onClick={() => handleOpenCreateTask(selectedDate)}>
+            + Add Task
           </button>
-          <button className="btn btn-primary" onClick={() => handleOpenCreate(selectedDate)}>
+          <button className="btn btn-primary" onClick={() => handleOpenCreateMeeting(selectedDate)}>
             + Schedule Meeting
           </button>
         </div>
       </header>
 
-      {/* metrics summary */}
+      {/* Metrics Summary */}
       <div className="stats-bar">
         <div className="stat-card">
-          <span className="stat-label">Total Meetings</span>
+          <span className="stat-label">Total Scheduled</span>
           <span className="stat-value">{totalCount}</span>
         </div>
         <div className="stat-card">
-          <span className="stat-label">Upcoming Meetings</span>
-          <span className="stat-value text-blue">{upcomingCount}</span>
+          <span className="stat-label">High Priority</span>
+          <span className="stat-value text-blue">{highPriorityCount}</span>
         </div>
         <div className="stat-card">
-          <span className="stat-label">Completed</span>
-          <span className="stat-value">{completedCount}</span>
+          <span className="stat-label">Meetings</span>
+          <span className="stat-value">{meetingCount}</span>
         </div>
         <div className="stat-card">
-          <span className="stat-label">Database Connection</span>
+          <span className="stat-label">Pending</span>
+          <span className="stat-value">{pendingCount}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Database</span>
           <span className={`status-pill ${serverOnline ? 'online' : 'offline'}`}>
             {serverOnline ? 'Connected' : 'Offline'}
           </span>
         </div>
       </div>
 
-      {/* view controls & filters */}
+      {/* Controls & Filters */}
       <div className="controls-bar">
         <div className="view-toggle">
           <button
@@ -249,13 +284,25 @@ function App() {
         <input
           type="text"
           className="search-input"
-          placeholder="Search by title, attendees, or discussion..."
+          placeholder="Search by title, attendees, or notes..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
         />
 
         <div className="filter-group">
-          {['All', 'Upcoming', 'Completed'].map((status) => (
+          {['All', 'task', 'meeting'].map((t) => (
+            <button
+              key={t}
+              className={`filter-btn ${typeFilter === t ? 'active' : ''}`}
+              onClick={() => setTypeFilter(t)}
+            >
+              {t === 'All' ? 'All Items' : t === 'task' ? 'Tasks Only' : 'Meetings Only'}
+            </button>
+          ))}
+        </div>
+
+        <div className="filter-group">
+          {['All', 'Pending', 'Completed'].map((status) => (
             <button
               key={status}
               className={`filter-btn ${statusFilter === status ? 'active' : ''}`}
@@ -267,7 +314,7 @@ function App() {
         </div>
       </div>
 
-      {/* calendar view */}
+      {/* Calendar View */}
       {viewMode === 'calendar' && (
         <div className="calendar-layout">
           <div className="calendar-widget">
@@ -296,258 +343,312 @@ function App() {
                 const formattedDay = String(dayNum).padStart(2, '0');
                 const formattedMonth = String(calMonth + 1).padStart(2, '0');
                 const dateStr = `${calYear}-${formattedMonth}-${formattedDay}`;
-                const dayMeetings = meetingsByDate[dateStr] || [];
+                const dayItems = (itemsByDate[dateStr] || []).sort(
+                  (a, b) => (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2)
+                );
                 const isSelected = selectedDate === dateStr;
                 const isToday = new Date().toISOString().split('T')[0] === dateStr;
 
                 return (
                   <div
                     key={dateStr}
-                    className={`cal-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+                    className={`cal-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''} ${dayItems.length > 0 ? 'has-tasks' : ''}`}
                     onClick={() => setSelectedDate(dateStr)}
                   >
-                    <span className="day-number">{dayNum}</span>
-                    {dayMeetings.length > 0 && (
-                      <span className="meeting-indicator">
-                        {dayMeetings.length}
-                      </span>
-                    )}
+                    <div className="cal-day-top">
+                      <span className="day-number">{dayNum}</span>
+                      {dayItems.some((it) => it.priority === 'High' && it.status !== 'Completed') && (
+                        <span className="cal-priority-dot" title="High Priority"></span>
+                      )}
+                    </div>
+
+                    <div className="cal-tasks-container">
+                      {dayItems.slice(0, 2).map((it) => {
+                        const isMeeting = Boolean(it.link || (it.attendees && it.attendees.trim() !== ''));
+                        return (
+                          <div
+                            key={it.id}
+                            className={`cal-task-chip priority-${(it.priority || 'medium').toLowerCase()} ${it.status === 'Completed' ? 'completed' : ''}`}
+                            title={`${it.time} - ${it.title} (${isMeeting ? 'Meeting' : 'Task'}, ${it.priority || 'Medium'} Priority)`}
+                          >
+                            <span className="chip-p-label">{it.priority === 'High' ? 'H' : it.priority === 'Low' ? 'L' : 'M'}</span>
+                            <span className="chip-title">{isMeeting ? '[M] ' : ''}{it.title}</span>
+                          </div>
+                        );
+                      })}
+                      {dayItems.length > 2 && (
+                        <span className="cal-tasks-more">+{dayItems.length - 2} more</span>
+                      )}
+                    </div>
                   </div>
                 );
               })}
             </div>
           </div>
 
-          {/* day schedule pane */}
+          {/* Day Schedule / Tasks Pane */}
           <div className="date-tasks-pane">
             <div className="pane-header">
               <div>
-                <h3>Schedule: <span>{selectedDate || 'All Dates'}</span></h3>
-                <span className="task-count">{filteredMeetings.length} meeting(s)</span>
+                <h3>Schedule for: <span>{selectedDate || 'All Dates'}</span></h3>
+                <span className="task-count">{filteredAndSortedItems.length} item(s)</span>
               </div>
-              <button className="btn btn-sm btn-primary" onClick={() => handleOpenCreate(selectedDate)}>
-                + Add for this date
-              </button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="btn btn-sm btn-outline" onClick={() => handleOpenCreateTask(selectedDate)}>
+                  + Task
+                </button>
+                <button className="btn btn-sm btn-primary" onClick={() => handleOpenCreateMeeting(selectedDate)}>
+                  + Meeting
+                </button>
+              </div>
             </div>
 
-            {filteredMeetings.length === 0 ? (
+            {filteredAndSortedItems.length === 0 ? (
               <div className="empty-day-state">
-                <p>No meetings scheduled for this date.</p>
-                <button className="btn btn-sm btn-secondary" onClick={() => handleOpenCreate(selectedDate)}>
-                  Schedule meeting
-                </button>
+                <p>Nothing scheduled for this date.</p>
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                  <button className="btn btn-sm btn-outline" onClick={() => handleOpenCreateTask(selectedDate)}>
+                    Add Task
+                  </button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => handleOpenCreateMeeting(selectedDate)}>
+                    Schedule Meeting
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="day-tasks-list">
-                {filteredMeetings.map((meeting) => (
-                  <div key={meeting.id} className="task-item">
-                    <div className="task-main">
-                      <div className="task-header-line">
-                        <span className="task-time">{meeting.time}</span>
-                        <span className="priority-tag">{meeting.priority || 'Medium'} Priority</span>
-                        <span className="task-status-tag">{meeting.status}</span>
+                {filteredAndSortedItems.map((item) => {
+                  const isMeeting = Boolean(item.link || (item.attendees && item.attendees.trim() !== ''));
+                  return (
+                    <div key={item.id} className={`task-item ${item.status === 'Completed' ? 'task-completed' : ''}`}>
+                      <div className="task-main">
+                        <div className="task-header-line">
+                          <span className="task-time">{item.time}</span>
+                          <span className={`priority-tag priority-${(item.priority || 'medium').toLowerCase()}`}>
+                            {item.priority || 'Medium'} Priority
+                          </span>
+                          <span className="task-status-tag">{isMeeting ? 'Meeting' : 'Task'}</span>
+                          <span className="task-status-tag">{item.status === 'Completed' ? 'Completed' : 'Pending'}</span>
+                        </div>
+
+                        <h4 className="task-title">{item.title}</h4>
+
+                        {item.notes && (
+                          <div className="task-discussion-box">
+                            <p>{item.notes}</p>
+                          </div>
+                        )}
+
+                        {item.attendees && (
+                          <div className="task-attendees">Attendees: {item.attendees}</div>
+                        )}
+
+                        {item.link && (
+                          <a
+                            href={item.link.startsWith('http') ? item.link : `https://${item.link}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="meet-link"
+                          >
+                            Join Meeting Link
+                          </a>
+                        )}
                       </div>
 
-                      <h4 className="task-title">{meeting.title}</h4>
-
-                      {meeting.notes && (
-                        <div className="task-discussion-box">
-                          <div className="discussion-heading">Key Discussion & Action Items:</div>
-                          <p>{meeting.notes}</p>
-                        </div>
-                      )}
-
-                      {meeting.attendees && (
-                        <div className="task-attendees">Attendees: {meeting.attendees}</div>
-                      )}
-
-                      {meeting.link && (
-                        <a
-                          href={meeting.link.startsWith('http') ? meeting.link : `https://${meeting.link}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="meet-link"
+                      <div className="task-actions">
+                        <button
+                          className="btn btn-sm btn-outline"
+                          onClick={() => handleToggleStatus(item)}
                         >
-                          Join Meeting Link
-                        </a>
-                      )}
+                          {item.status === 'Completed' ? 'Mark Pending' : 'Mark Done'}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => handleOpenEdit(item)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="btn btn-sm btn-danger"
+                          onClick={() => handleDelete(item.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
-
-                    <div className="task-actions">
-                      <button
-                        className="btn btn-sm btn-outline"
-                        onClick={() => handleToggleStatus(meeting)}
-                      >
-                        {meeting.status === 'Completed' ? 'Mark Upcoming' : 'Mark Done'}
-                      </button>
-                      <button
-                        className="btn btn-sm btn-secondary"
-                        onClick={() => handleOpenEdit(meeting)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        onClick={() => handleDelete(meeting.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* table view */}
+      {/* Table View */}
       {viewMode === 'table' && (
         <div className="table-wrapper">
           <table className="meetings-table">
             <thead>
               <tr>
                 <th>Date & Time</th>
-                <th>Title</th>
+                <th>Type</th>
                 <th>Priority</th>
-                <th>Key Discussion / Action Items</th>
-                <th>Attendees</th>
-                <th>Meeting Link</th>
+                <th>Title</th>
+                <th>Attendees / Details</th>
+                <th>Link</th>
                 <th>Status</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredMeetings.length === 0 ? (
+              {filteredAndSortedItems.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="table-empty">No meetings found.</td>
+                  <td colSpan="8" className="table-empty">No items found.</td>
                 </tr>
               ) : (
-                filteredMeetings.map((m) => (
-                  <tr key={m.id}>
-                    <td className="td-datetime">
-                      <strong>{m.date}</strong>
-                      <small>{m.time}</small>
-                    </td>
-                    <td className="td-title">{m.title}</td>
-                    <td>
-                      <span className="priority-tag">{m.priority || 'Medium'}</span>
-                    </td>
-                    <td className="td-notes" title={m.notes}>
-                      {m.notes || '—'}
-                    </td>
-                    <td className="td-attendees">{m.attendees || '—'}</td>
-                    <td>
-                      {m.link ? (
-                        <a
-                          href={m.link.startsWith('http') ? m.link : `https://${m.link}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="meet-link"
-                        >
-                          Join
-                        </a>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-                    <td>
-                      <span className="status-badge">{m.status}</span>
-                    </td>
-                    <td className="td-actions">
-                      <button className="btn-link-action" onClick={() => handleToggleStatus(m)}>
-                        {m.status === 'Completed' ? 'Undo' : 'Done'}
-                      </button>
-                      <button className="btn-link-action" onClick={() => handleOpenEdit(m)}>
-                        Edit
-                      </button>
-                      <button className="btn-link-action" onClick={() => handleDelete(m.id)}>
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                filteredAndSortedItems.map((item) => {
+                  const isMeeting = Boolean(item.link || (item.attendees && item.attendees.trim() !== ''));
+                  return (
+                    <tr key={item.id} className={item.status === 'Completed' ? 'task-completed' : ''}>
+                      <td className="td-datetime">
+                        <strong>{item.date}</strong>
+                        <small>{item.time}</small>
+                      </td>
+                      <td>
+                        <span className="task-status-tag">{isMeeting ? 'Meeting' : 'Task'}</span>
+                      </td>
+                      <td>
+                        <span className={`priority-tag priority-${(item.priority || 'medium').toLowerCase()}`}>
+                          {item.priority || 'Medium'}
+                        </span>
+                      </td>
+                      <td className="td-title">{item.title}</td>
+                      <td className="td-notes" title={item.notes || item.attendees}>
+                        {item.attendees ? `Attendees: ${item.attendees}` : item.notes || '—'}
+                      </td>
+                      <td>
+                        {item.link ? (
+                          <a
+                            href={item.link.startsWith('http') ? item.link : `https://${item.link}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="meet-link"
+                          >
+                            Join
+                          </a>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td>
+                        <span className="status-badge">{item.status === 'Completed' ? 'Completed' : 'Pending'}</span>
+                      </td>
+                      <td className="td-actions">
+                        <button className="btn-link-action" onClick={() => handleToggleStatus(item)}>
+                          {item.status === 'Completed' ? 'Undo' : 'Done'}
+                        </button>
+                        <button className="btn-link-action" onClick={() => handleOpenEdit(item)}>
+                          Edit
+                        </button>
+                        <button className="btn-link-action" onClick={() => handleDelete(item.id)}>
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* cards view */}
+      {/* Cards View */}
       {viewMode === 'cards' && (
         <div className="meetings-grid">
-          {filteredMeetings.length === 0 ? (
-            <div className="empty-state">No meetings found.</div>
+          {filteredAndSortedItems.length === 0 ? (
+            <div className="empty-state">No items found.</div>
           ) : (
-            filteredMeetings.map((meeting) => (
-              <div key={meeting.id} className="meeting-card">
-                <div className="card-top">
-                  <span className="badge-datetime">{meeting.date} at {meeting.time}</span>
-                  <span className="priority-tag">{meeting.priority || 'Medium'}</span>
-                </div>
-
-                <h3 className="card-title">{meeting.title}</h3>
-
-                {meeting.notes && (
-                  <div className="task-discussion-box">
-                    <div className="discussion-heading">Key Discussion & Action Items:</div>
-                    <p>{meeting.notes}</p>
+            filteredAndSortedItems.map((item) => {
+              const isMeeting = Boolean(item.link || (item.attendees && item.attendees.trim() !== ''));
+              return (
+                <div key={item.id} className={`meeting-card ${item.status === 'Completed' ? 'task-completed' : ''}`}>
+                  <div className="card-top">
+                    <span className="badge-datetime">{item.date} at {item.time}</span>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <span className="task-status-tag">{isMeeting ? 'Meeting' : 'Task'}</span>
+                      <span className={`priority-tag priority-${(item.priority || 'medium').toLowerCase()}`}>
+                        {item.priority || 'Medium'}
+                      </span>
+                    </div>
                   </div>
-                )}
 
-                {meeting.attendees && (
-                  <p className="card-field">
-                    <strong>Attendees:</strong> {meeting.attendees}
-                  </p>
-                )}
+                  <h3 className="card-title">{item.title}</h3>
 
-                {meeting.link && (
-                  <p className="card-field">
-                    <a
-                      href={meeting.link.startsWith('http') ? meeting.link : `https://${meeting.link}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="meet-link"
-                    >
-                      Join Meeting Link
-                    </a>
-                  </p>
-                )}
+                  {item.notes && (
+                    <div className="task-discussion-box">
+                      <p>{item.notes}</p>
+                    </div>
+                  )}
 
-                <div className="card-actions">
-                  <button
-                    className="btn btn-sm btn-outline"
-                    onClick={() => handleToggleStatus(meeting)}
-                  >
-                    {meeting.status === 'Completed' ? 'Mark Upcoming' : 'Mark Done'}
-                  </button>
-                  <div className="actions-right">
+                  {item.attendees && (
+                    <p className="card-field">
+                      <strong>Attendees:</strong> {item.attendees}
+                    </p>
+                  )}
+
+                  {item.link && (
+                    <p className="card-field">
+                      <a
+                        href={item.link.startsWith('http') ? item.link : `https://${item.link}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="meet-link"
+                      >
+                        Join Meeting Link
+                      </a>
+                    </p>
+                  )}
+
+                  <div className="card-actions">
                     <button
-                      className="btn btn-sm btn-secondary"
-                      onClick={() => handleOpenEdit(meeting)}
+                      className="btn btn-sm btn-outline"
+                      onClick={() => handleToggleStatus(item)}
                     >
-                      Edit
+                      {item.status === 'Completed' ? 'Mark Pending' : 'Mark Done'}
                     </button>
-                    <button
-                      className="btn btn-sm btn-danger"
-                      onClick={() => handleDelete(meeting.id)}
-                    >
-                      Delete
-                    </button>
+                    <div className="actions-right">
+                      <button
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => handleOpenEdit(item)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="btn btn-sm btn-danger"
+                        onClick={() => handleDelete(item.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       )}
 
-      {/* slide-out drawer */}
+      {/* Slide-out Drawer for Add and Edit */}
       {isDrawerOpen && (
         <div className="drawer-overlay" onClick={handleCloseDrawer}>
           <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
-              <h2>{editingId ? 'Edit Meeting Details' : 'Schedule New Meeting'}</h2>
+              <h2>
+                {editingId
+                  ? formType === 'meeting' ? 'Edit Meeting Details' : 'Edit Task Details'
+                  : formType === 'meeting' ? 'Schedule New Meeting' : 'Add New Task'}
+              </h2>
               <button className="close-btn" onClick={handleCloseDrawer}>
                 &times;
               </button>
@@ -555,24 +656,17 @@ function App() {
 
             <form onSubmit={handleSubmit} className="drawer-form">
               <div className="form-group">
-                <label>Meeting Title *</label>
+                <label>{formType === 'meeting' ? 'Meeting Title *' : 'Task Title *'}</label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g., Sprint Planning, Townhall"
+                  placeholder={
+                    formType === 'meeting'
+                      ? 'e.g., Sprint Planning, Townhall, Client Review'
+                      : 'e.g., Complete project report, Review PRs'
+                  }
                   value={formData.title}
                   onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="label-bold">Key Discussion & Action Items *</label>
-                <textarea
-                  rows="4"
-                  required
-                  placeholder="Points to discuss, decisions to remember, next steps..."
-                  value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
                 />
               </div>
 
@@ -591,7 +685,7 @@ function App() {
                   <input
                     type="text"
                     required
-                    placeholder="11:00 PM"
+                    placeholder="e.g., 10:00 AM, 02:30 PM"
                     value={formData.time}
                     onChange={(e) => setFormData({ ...formData, time: e.target.value })}
                   />
@@ -600,7 +694,7 @@ function App() {
 
               <div className="form-row">
                 <div className="form-group">
-                  <label>Priority</label>
+                  <label>Priority *</label>
                   <select
                     value={formData.priority}
                     onChange={(e) => setFormData({ ...formData, priority: e.target.value })}
@@ -610,37 +704,54 @@ function App() {
                     <option value="Low">Low</option>
                   </select>
                 </div>
-
                 <div className="form-group">
                   <label>Status</label>
                   <select
                     value={formData.status}
                     onChange={(e) => setFormData({ ...formData, status: e.target.value })}
                   >
-                    <option value="Upcoming">Upcoming</option>
+                    <option value="Pending">Pending</option>
                     <option value="Completed">Completed</option>
                   </select>
                 </div>
               </div>
 
-              <div className="form-group">
-                <label>Meeting Link (Google Meet / Zoom)</label>
-                <input
-                  type="text"
-                  placeholder="https://meet.google.com/..."
-                  value={formData.link}
-                  onChange={(e) => setFormData({ ...formData, link: e.target.value })}
-                />
-              </div>
+              {formType === 'meeting' && (
+                <>
+                  <div className="form-group">
+                    <label>Meeting Link (Google Meet / Zoom)</label>
+                    <input
+                      type="text"
+                      placeholder="https://meet.google.com/..."
+                      value={formData.link}
+                      onChange={(e) => setFormData({ ...formData, link: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label>Attendees</label>
+                    <input
+                      type="text"
+                      placeholder="e.g., Sagar (Host), Priya Sharma, Rohan Gupta"
+                      value={formData.attendees}
+                      onChange={(e) => setFormData({ ...formData, attendees: e.target.value })}
+                    />
+                  </div>
+                </>
+              )}
 
               <div className="form-group">
-                <label>Attendees</label>
-                <input
-                  type="text"
-                  placeholder="e.g., Sagar, Priya Sharma, Rohan Gupta, Dev Team"
-                  value={formData.attendees}
-                  onChange={(e) => setFormData({ ...formData, attendees: e.target.value })}
-                />
+                <label>{formType === 'meeting' ? 'Discussion Agenda / Notes' : 'Task Description / Notes'}</label>
+                <textarea
+                  rows="4"
+                  placeholder={
+                    formType === 'meeting'
+                      ? 'Add key agenda points, topics to discuss...'
+                      : 'Add details, steps, or requirements for this task...'
+                  }
+                  value={formData.notes}
+                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                ></textarea>
               </div>
 
               <div className="drawer-footer">
@@ -648,7 +759,11 @@ function App() {
                   Cancel
                 </button>
                 <button type="submit" className="btn btn-primary">
-                  {editingId ? 'Save Changes' : 'Schedule Meeting'}
+                  {editingId
+                    ? 'Save Changes'
+                    : formType === 'meeting'
+                    ? 'Schedule Meeting'
+                    : 'Add Task'}
                 </button>
               </div>
             </form>
