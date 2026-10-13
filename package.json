@@ -1,0 +1,12 @@
+{
+  "name": "pcs-meet-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PCS Meet Manager - Schedule meetings, track agendas, and organize action items.",
+  "scripts": {
+    "start": "node server/server.js",
+    "server": "cd server && npm start",
+    "client": "cd client && npm run dev",
+    "build": "cd client && npm run build"
+  }
+}

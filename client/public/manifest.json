@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "PCS Meet Manager",
+  "version": "1.0.0",
+  "description": "Executive meeting manager, calendar sync, and action item tracker with side-panel integration.",
+  "action": {
+    "default_title": "Open PCS Meet Manager Side Panel"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "permissions": [
+    "sidePanel",
+    "alarms",
+    "notifications",
+    "storage",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "favicon.svg",
+    "48": "favicon.svg",
+    "128": "favicon.svg"
+  }
+}

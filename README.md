@@ -1,4 +1,4 @@
-# MeetManager
+# PCS Meet Manager
 
 A simple full-stack web application to schedule meetings, track agendas, and organize action items.
 

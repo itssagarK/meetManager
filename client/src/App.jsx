@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 
 const API_URL = '/api/meetings';
@@ -17,31 +17,58 @@ const initialFormData = {
 const priorityOrder = { High: 1, Medium: 2, Low: 3 };
 
 function App() {
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState(() => {
+    const cached = localStorage.getItem('mm_cached_items');
+    return cached ? JSON.parse(cached) : [];
+  });
   const [loading, setLoading] = useState(true);
   const [serverOnline, setServerOnline] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
-  const [typeFilter, setTypeFilter] = useState('All'); // 'All' | 'task' | 'meeting'
-  const [viewMode, setViewMode] = useState('calendar'); // 'calendar' | 'table' | 'cards'
+  const [typeFilter, setTypeFilter] = useState('All'); // 'All' | 'tasks' | 'meetings'
+  const [viewMode, setViewMode] = useState('calendar'); // 'calendar' | 'table' | 'cards' | 'analytics'
   const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [toastMessage, setToastMessage] = useState('');
+  const todayStr = new Date().toISOString().split('T')[0];
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [dismissTriage, setDismissTriage] = useState(false);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    if (typeof Notification !== 'undefined') {
+      return Notification.permission === 'granted';
+    }
+    return false;
+  });
+  const alertedMeetingsRef = useRef(new Set());
 
-  // Drawer Form State
+  useEffect(() => {
+    const ticker = setInterval(() => setCurrentTime(new Date()), 30000);
+    return () => clearInterval(ticker);
+  }, []);
+
+  // Slide-out Drawer State
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [formType, setFormType] = useState('task'); // 'task' | 'meeting'
+  const [drawerType, setDrawerType] = useState('task'); // 'task' | 'meeting'
   const [editingId, setEditingId] = useState(null);
   const [formData, setFormData] = useState(initialFormData);
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(''), 3000);
+  };
 
   const fetchItems = async () => {
     try {
       const res = await fetch(API_URL);
-      if (!res.ok) throw new Error('Network error');
+      if (!res.ok) throw new Error('API request failed');
       const data = await res.json();
       setItems(data);
+      localStorage.setItem('mm_cached_items', JSON.stringify(data));
       setServerOnline(true);
     } catch (err) {
-      console.error('Error fetching items:', err);
+      console.warn('Backend unavailable, using local cache:', err);
       setServerOnline(false);
     } finally {
       setLoading(false);
@@ -52,13 +79,15 @@ function App() {
     fetchItems();
   }, []);
 
-  const handleOpenCreateTask = (prefillDate = null) => {
+  const isMeeting = (item) => Boolean(item.type === 'meeting' || item.link || (item.attendees && item.attendees.trim() !== ''));
+
+  const handleOpenCreateTask = (date = null) => {
     setEditingId(null);
-    setFormType('task');
+    setDrawerType('task');
     setFormData({
       ...initialFormData,
       title: '',
-      date: prefillDate || selectedDate || initialFormData.date,
+      date: date || selectedDate || initialFormData.date,
       time: '10:00 AM',
       priority: 'High',
       link: '',
@@ -67,25 +96,25 @@ function App() {
     setIsDrawerOpen(true);
   };
 
-  const handleOpenCreateMeeting = (prefillDate = null) => {
+  const handleOpenCreateMeeting = (date = null) => {
     setEditingId(null);
-    setFormType('meeting');
+    setDrawerType('meeting');
     setFormData({
       ...initialFormData,
       title: '',
-      date: prefillDate || selectedDate || initialFormData.date,
+      date: date || selectedDate || initialFormData.date,
       time: '02:00 PM',
       priority: 'Medium',
-      link: 'https://meet.google.com/',
+      link: 'https://meet.google.com/new',
       attendees: 'Sagar (Host), Team',
     });
     setIsDrawerOpen(true);
   };
 
   const handleOpenEdit = (item) => {
-    const isMeeting = Boolean(item.link || (item.attendees && item.attendees.trim() !== ''));
+    const meetingType = isMeeting(item);
     setEditingId(item.id);
-    setFormType(isMeeting ? 'meeting' : 'task');
+    setDrawerType(meetingType ? 'meeting' : 'task');
     setFormData({
       title: item.title,
       date: item.date,
@@ -104,57 +133,458 @@ function App() {
     setEditingId(null);
   };
 
+  const handleAutoDetectCallLink = async () => {
+    // 1. Chrome Extension context: Query the active tab
+    if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const activeTab = tabs && tabs[0];
+        if (activeTab && activeTab.url) {
+          const url = activeTab.url;
+          if (
+            url.includes('meet.google.com') ||
+            url.includes('zoom.us') ||
+            url.includes('teams.microsoft.com') ||
+            url.startsWith('http')
+          ) {
+            setFormData((prev) => ({
+              ...prev,
+              link: url,
+              title: prev.title || activeTab.title?.replace(/ - Google Meet| \| Zoom| - Microsoft Teams/i, '') || '',
+            }));
+            showToast('Captured active meeting tab link');
+            return;
+          }
+        }
+        showToast('Active tab is not a recognized video call URL');
+      });
+      return;
+    }
+
+    // 2. Standalone web fallback: Read from clipboard
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (
+          text.includes('meet.google.com') ||
+          text.includes('zoom.us') ||
+          text.includes('teams.microsoft.com') ||
+          text.startsWith('http')
+        ) {
+          setFormData((prev) => ({ ...prev, link: text.trim() }));
+          showToast('Pasted link from clipboard');
+          return;
+        }
+      } catch (err) {
+        // Fallback if clipboard permission not granted
+      }
+    }
+    showToast('Paste the meeting link into the field');
+  };
+
+  // Global Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setIsPaletteOpen((prev) => !prev);
+        setPaletteQuery('');
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        if (isPaletteOpen) {
+          setIsPaletteOpen(false);
+          return;
+        }
+        handleCloseDrawer();
+        return;
+      }
+
+      const tag = e.target.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+        return;
+      }
+
+      if (e.key === 't' || e.key === 'T') {
+        e.preventDefault();
+        handleOpenCreateTask(selectedDate);
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        handleOpenCreateMeeting(selectedDate);
+      } else if (e.key === '/') {
+        e.preventDefault();
+        const searchInput = document.getElementById('global-search-input');
+        if (searchInput) searchInput.focus();
+      } else if (e.key === '1') {
+        setViewMode('calendar');
+      } else if (e.key === '2') {
+        setViewMode('table');
+      } else if (e.key === '3') {
+        setViewMode('cards');
+      } else if (e.key === '4') {
+        setViewMode('analytics');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedDate, isPaletteOpen]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const payload = {
+      ...formData,
+      type: drawerType,
+    };
+
+    // 1. Instant local update (0ms lag)
+    if (editingId) {
+      const updated = items.map((it) => (it.id === editingId ? { ...payload, id: editingId } : it));
+      setItems(updated);
+      localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+    } else {
+      const newLocalItem = { ...payload, id: Date.now() };
+      const updated = [...items, newLocalItem];
+      setItems(updated);
+      localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+    }
+
+    handleCloseDrawer();
+    showToast(editingId ? 'Changes saved' : drawerType === 'meeting' ? 'Meeting scheduled' : 'Task added');
+
+    // 2. Sync with backend
     try {
       const url = editingId ? `${API_URL}/${editingId}` : API_URL;
       const method = editingId ? 'PUT' : 'POST';
 
-      const res = await fetch(url, {
+      let res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
 
-      if (!res.ok) {
-        const errorData = await res.json();
-        alert(`Error: ${errorData.error || 'Failed to save'}`);
-        return;
+      if (!res.ok && editingId && res.status === 404) {
+        res = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
       }
 
-      await fetchItems();
-      handleCloseDrawer();
+      if (res.ok) {
+        await fetchItems();
+      }
     } catch (err) {
-      console.error('Save error:', err);
-      alert('Failed to connect to backend server.');
+      console.warn('Backend sync deferred:', err);
     }
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this item?')) return;
+    if (!window.confirm('Delete this item?')) return;
+    const updated = items.filter((it) => it.id !== id);
+    setItems(updated);
+    localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+    showToast('Item deleted');
+
     try {
-      const res = await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete item');
-      await fetchItems();
+      await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
     } catch (err) {
-      console.error('Delete error:', err);
-      alert('Failed to delete item.');
+      console.warn('Backend delete sync deferred:', err);
     }
   };
 
   const handleToggleStatus = async (item) => {
     const nextStatus = item.status === 'Completed' ? 'Pending' : 'Completed';
+    const updated = items.map((it) => (it.id === item.id ? { ...it, status: nextStatus } : it));
+    setItems(updated);
+    localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+    showToast(nextStatus === 'Completed' ? 'Marked complete' : 'Marked pending');
+
     try {
-      const res = await fetch(`${API_URL}/${item.id}`, {
+      await fetch(`${API_URL}/${item.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...item, status: nextStatus }),
       });
-      if (!res.ok) throw new Error('Failed to update status');
-      await fetchItems();
     } catch (err) {
-      console.error('Update status error:', err);
-      alert('Failed to update status.');
+      console.warn('Backend toggle sync deferred:', err);
+    }
+  };
+
+  const handleMoveToTomorrow = async (item) => {
+    const currentDate = new Date(item.date || selectedDate);
+    currentDate.setDate(currentDate.getDate() + 1);
+    const tomorrowStr = currentDate.toISOString().split('T')[0];
+    const updatedPayload = { ...item, date: tomorrowStr };
+
+    const updated = items.map((it) => (it.id === item.id ? updatedPayload : it));
+    setItems(updated);
+    localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+    showToast(`Moved "${item.title}" to tomorrow (${tomorrowStr})`);
+
+    try {
+      await fetch(`${API_URL}/${item.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedPayload),
+      });
+    } catch (err) {
+      console.warn('Backend move sync deferred:', err);
+    }
+  };
+
+  const handleCopyMeetingInvite = (item) => {
+    const inviteText = [
+      `Meeting: ${item.title}`,
+      `Date & Time: ${item.date} at ${item.time}`,
+      item.attendees ? `Attendees: ${item.attendees}` : null,
+      item.link ? `Join Link: ${item.link}` : null,
+      item.notes ? `Agenda / Notes: ${item.notes}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(inviteText);
+      showToast('Meeting invite copied to clipboard');
+    } else {
+      prompt('Copy meeting invite:', inviteText);
+    }
+  };
+
+  // Parse meeting time strings (e.g. "02:30 PM", "10:00 AM") into Date objects
+  const parseTimeToDate = (timeStr, dateStr) => {
+    if (!timeStr) return null;
+    const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)?/i);
+    if (!match) return null;
+    let hours = parseInt(match[1], 10);
+    const minutes = parseInt(match[2], 10);
+    const period = match[3] ? match[3].toUpperCase() : null;
+    if (period === 'PM' && hours < 12) hours += 12;
+    if (period === 'AM' && hours === 12) hours = 0;
+    const d = new Date(dateStr ? dateStr + 'T00:00:00' : new Date());
+    d.setHours(hours, minutes, 0, 0);
+    return d;
+  };
+
+  // Up Next Meeting calculation
+  const todayMeetings = items
+    .filter((item) => isMeeting(item) && item.date === todayStr)
+    .sort((a, b) => {
+      const da = parseTimeToDate(a.time, a.date) || 0;
+      const db = parseTimeToDate(b.time, b.date) || 0;
+      return da - db;
+    });
+
+  const upNextMeeting = todayMeetings.find((m) => {
+    const mDate = parseTimeToDate(m.time, m.date);
+    if (!mDate) return false;
+    return (mDate.getTime() + 45 * 60000) > currentTime.getTime();
+  });
+
+  const getCountdownText = (meeting) => {
+    if (!meeting) return '';
+    const mDate = parseTimeToDate(meeting.time, meeting.date);
+    if (!mDate) return meeting.time;
+    const diffMins = Math.round((mDate.getTime() - currentTime.getTime()) / 60000);
+    if (diffMins > 0) return `Starts in ${diffMins} min${diffMins === 1 ? '' : 's'}`;
+    if (diffMins >= -45) return 'In Progress Now';
+    return 'Concluded';
+  };
+
+  // Pre-Meeting Desktop Notifications (Chrome Alarms & Web Notification fallback)
+  const scheduleExtensionAlarms = (meetingsList) => {
+    if (typeof chrome !== 'undefined' && chrome.alarms && chrome.alarms.create) {
+      chrome.alarms.getAll((alarms) => {
+        alarms.forEach((al) => {
+          if (al.name.startsWith('meet-alert:')) {
+            chrome.alarms.clear(al.name);
+          }
+        });
+        const now = Date.now();
+        meetingsList.forEach((m) => {
+          if (m.date === todayStr && m.status !== 'Completed') {
+            const mDate = parseTimeToDate(m.time, m.date);
+            if (mDate) {
+              const triggerTime = mDate.getTime() - 2 * 60000;
+              if (triggerTime > now) {
+                chrome.alarms.create(`meet-alert:${m.title}`, {
+                  when: triggerTime,
+                });
+              }
+            }
+          }
+        });
+      });
+    }
+  };
+
+  useEffect(() => {
+    scheduleExtensionAlarms(items);
+  }, [items]);
+
+  useEffect(() => {
+    if (!notificationsEnabled || typeof Notification === 'undefined') return;
+    const now = currentTime.getTime();
+    todayMeetings.forEach((m) => {
+      if (m.status === 'Completed') return;
+      const mDate = parseTimeToDate(m.time, m.date);
+      if (!mDate) return;
+      const diffMs = mDate.getTime() - now;
+      if (diffMs > 0 && diffMs <= 2.5 * 60000) {
+        const alertKey = `${m.id || m.title}-${m.date}-${m.time}`;
+        if (!alertedMeetingsRef.current.has(alertKey)) {
+          alertedMeetingsRef.current.add(alertKey);
+          new Notification('Upcoming Meeting - PCS Meet Manager', {
+            body: `"${m.title}" starts in 2 minutes.`,
+            icon: '/favicon.svg',
+          });
+        }
+      }
+    });
+  }, [currentTime, todayMeetings, notificationsEnabled]);
+
+  const handleRequestNotificationPermission = async () => {
+    if (typeof Notification === 'undefined') {
+      showToast('Notifications are not supported in this environment');
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      setNotificationsEnabled(true);
+      showToast('Desktop alerts already active (2-min warning)');
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm === 'granted') {
+      setNotificationsEnabled(true);
+      showToast('Desktop alerts enabled (2-min warning)');
+    } else {
+      setNotificationsEnabled(false);
+      showToast('Notification permission was denied');
+    }
+  };
+
+  // Overdue Task Rollover Logic (0ms Optimistic UI)
+  const overdueTasks = items.filter(
+    (item) => !isMeeting(item) && item.status !== 'Completed' && item.date < todayStr
+  );
+
+  const handleRolloverAllOverdue = async () => {
+    if (overdueTasks.length === 0) return;
+    const overdueIds = new Set(overdueTasks.map((t) => t.id));
+    const updatedItems = items.map((t) =>
+      overdueIds.has(t.id) ? { ...t, date: todayStr } : t
+    );
+    setItems(updatedItems);
+    localStorage.setItem('mm_cached_items', JSON.stringify(updatedItems));
+    showToast(`Moved ${overdueTasks.length} overdue task${overdueTasks.length > 1 ? 's' : ''} to today`);
+
+    try {
+      await Promise.all(
+        overdueTasks.map((t) =>
+          fetch(`${API_URL}/${t.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...t, date: todayStr }),
+          })
+        )
+      );
+    } catch (err) {
+      console.warn('Background sync failed for batch rollover:', err);
+    }
+  };
+
+  // Google Calendar Web Link Generator
+  const getGoogleCalendarUrl = (item) => {
+    const startDate = parseTimeToDate(item.time, item.date) || new Date();
+    const endDate = new Date(startDate.getTime() + 45 * 60000); // 45-min duration
+
+    const formatGCalDate = (d) => d.toISOString().replace(/-|:|\.\d\d\d/g, '');
+    const startStr = formatGCalDate(startDate);
+    const endStr = formatGCalDate(endDate);
+
+    const details = [
+      item.notes ? `Agenda / Notes:\n${item.notes}` : '',
+      item.attendees ? `Attendees: ${item.attendees}` : '',
+      item.link ? `Join Link: ${item.link}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const params = new URLSearchParams({
+      action: 'TEMPLATE',
+      text: item.title,
+      dates: `${startStr}/${endStr}`,
+      details: details,
+      location: item.link || '',
+    });
+
+    return `https://calendar.google.com/calendar/render?${params.toString()}`;
+  };
+
+  const handleAddToGoogleCalendar = (item) => {
+    const url = getGoogleCalendarUrl(item);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  // Meeting Notes to Standalone Tasks Converter
+  const handleConvertNotesToTasks = async (meeting) => {
+    if (!meeting.notes || !meeting.notes.trim()) {
+      showToast('Meeting has no notes to convert');
+      return;
+    }
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+    // Parse lines and strip bullets
+    const rawLines = meeting.notes
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const taskTitles = rawLines
+      .map((line) => line.replace(/^[-*•\d+.)]\s*/, '').trim())
+      .filter((title) => title.length > 0);
+
+    if (taskTitles.length === 0) {
+      showToast('No action items found in notes');
+      return;
+    }
+
+    const newTasks = taskTitles.map((title, idx) => ({
+      id: Date.now() + idx,
+      title: title,
+      date: tomorrowStr,
+      time: '10:00 AM',
+      priority: 'Medium',
+      status: 'Pending',
+      type: 'task',
+      link: '',
+      attendees: meeting.attendees || '',
+      notes: `Action item from meeting: ${meeting.title}`,
+    }));
+
+    // Optimistic UI update (0ms lag)
+    const updatedItems = [...items, ...newTasks];
+    setItems(updatedItems);
+    localStorage.setItem('mm_cached_items', JSON.stringify(updatedItems));
+    showToast(`Created ${newTasks.length} task${newTasks.length > 1 ? 's' : ''} for tomorrow from notes`);
+
+    // Background sync to SQLite
+    try {
+      await Promise.all(
+        newTasks.map((t) =>
+          fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(t),
+          })
+        )
+      );
+    } catch (err) {
+      console.warn('Backend sync deferred for converted tasks:', err);
     }
   };
 
@@ -178,12 +608,10 @@ function App() {
     return acc;
   }, {});
 
-  // Filtered and sorted list
+  // Filtered & sorted items
   const filteredAndSortedItems = items
     .filter((it) => {
-      const isMeeting = Boolean(it.link || (it.attendees && it.attendees.trim() !== ''));
-      const itType = isMeeting ? 'meeting' : 'task';
-
+      const itMeeting = isMeeting(it);
       const matchesSearch =
         it.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (it.notes && it.notes.toLowerCase().includes(searchTerm.toLowerCase())) ||
@@ -197,9 +625,14 @@ function App() {
           ? isCompleted
           : !isCompleted;
 
-      const matchesType = typeFilter === 'All' || itType === typeFilter;
-      const matchesDate = viewMode === 'calendar' && selectedDate ? it.date === selectedDate : true;
+      const matchesType =
+        typeFilter === 'All'
+          ? true
+          : typeFilter === 'meetings'
+          ? itMeeting
+          : !itMeeting;
 
+      const matchesDate = viewMode === 'calendar' && selectedDate ? it.date === selectedDate : true;
       return matchesSearch && matchesStatus && matchesType && matchesDate;
     })
     .sort((a, b) => {
@@ -209,469 +642,869 @@ function App() {
       return (a.time || '').localeCompare(b.time || '');
     });
 
+  // Metrics
   const totalCount = items.length;
   const highPriorityCount = items.filter((it) => it.priority === 'High' && it.status !== 'Completed').length;
-  const meetingCount = items.filter((it) => it.link || (it.attendees && it.attendees.trim() !== '')).length;
+  const meetingCount = items.filter(isMeeting).length;
   const pendingCount = items.filter((it) => it.status !== 'Completed').length;
+  const completedCount = items.filter((it) => it.status === 'Completed').length;
+  const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+
+  // Selected Day items
+  const dayScheduleItems = (itemsByDate[selectedDate] || []).sort((a, b) => {
+    const pA = priorityOrder[a.priority] || 2;
+    const pB = priorityOrder[b.priority] || 2;
+    if (pA !== pB) return pA - pB;
+    return (a.time || '').localeCompare(b.time || '');
+  });
+
+  // Command Palette Built-in Commands
+  const builtInCommands = [
+    { id: 'cmd-task', title: '+ New Task', icon: 'add', action: () => { handleOpenCreateTask(selectedDate); setIsPaletteOpen(false); } },
+    { id: 'cmd-meeting', title: '+ Schedule Meeting', icon: 'event', action: () => { handleOpenCreateMeeting(selectedDate); setIsPaletteOpen(false); } },
+    { id: 'cmd-today', title: 'Jump to Today', icon: 'today', action: () => { setSelectedDate(todayStr); setCurrentCalendarDate(new Date()); setIsPaletteOpen(false); showToast('Switched to today'); } },
+    { id: 'cmd-triage', title: 'Move All Overdue to Today', icon: 'low_priority', action: () => { handleRolloverAllOverdue(); setIsPaletteOpen(false); } },
+    { id: 'cmd-cal', title: 'Switch to Calendar View', icon: 'calendar_month', action: () => { setViewMode('calendar'); setIsPaletteOpen(false); } },
+    { id: 'cmd-tbl', title: 'Switch to Table View', icon: 'table_rows', action: () => { setViewMode('table'); setIsPaletteOpen(false); } },
+    { id: 'cmd-crd', title: 'Switch to Cards View', icon: 'view_kanban', action: () => { setViewMode('cards'); setIsPaletteOpen(false); } },
+    { id: 'cmd-anl', title: 'Switch to Analytics View', icon: 'analytics', action: () => { setViewMode('analytics'); setIsPaletteOpen(false); } },
+  ];
+
+  const filteredCommands = builtInCommands.filter((c) =>
+    c.title.toLowerCase().includes(paletteQuery.toLowerCase())
+  );
+
+  const matchingPaletteItems = items
+    .filter((it) =>
+      it.title.toLowerCase().includes(paletteQuery.toLowerCase()) ||
+      (it.notes && it.notes.toLowerCase().includes(paletteQuery.toLowerCase()))
+    )
+    .slice(0, 6);
+
+  // 90-Day Activity Heatmap Data & Streak Calculation
+  const heatmapDays = (() => {
+    const days = [];
+    const today = new Date();
+    for (let i = 89; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      const dayItems = items.filter((it) => it.date === dateStr);
+      const dayCompletedCount = dayItems.filter((it) => it.status === 'Completed').length;
+      const dayMeetingsCount = dayItems.filter(isMeeting).length;
+      const score = dayCompletedCount + dayMeetingsCount;
+      days.push({
+        date: dateStr,
+        completedCount: dayCompletedCount,
+        meetingsCount: dayMeetingsCount,
+        score,
+      });
+    }
+    return days;
+  })();
+
+  const heatmapTotalActions = heatmapDays.reduce((acc, d) => acc + d.score, 0);
+
+  const activeStreak = (() => {
+    let streak = 0;
+    const today = new Date();
+    for (let i = 0; i < 90; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      const hasActivity = items.some(
+        (it) => it.date === dateStr && (it.status === 'Completed' || isMeeting(it))
+      );
+      if (hasActivity) {
+        streak++;
+      } else if (i > 0) {
+        break;
+      }
+    }
+    return streak;
+  })();
 
   return (
-    <div className="app-container">
-      {/* Header */}
-      <header className="app-header">
-        <div>
-          <h1>Task & Meeting Manager</h1>
-          <p className="subtitle">Manage tasks and schedule meetings by priority and time</p>
-        </div>
-        <div className="header-actions">
-          <button className="btn btn-outline" onClick={() => handleOpenCreateTask(selectedDate)}>
-            + Add Task
-          </button>
-          <button className="btn btn-primary" onClick={() => handleOpenCreateMeeting(selectedDate)}>
-            + Schedule Meeting
-          </button>
+    <div>
+      {/* Top Header - Clean, no nav links */}
+      <header className="modern-header">
+        <div className="header-inner">
+          <h2 className="brand-title">PCS Meet Manager</h2>
+
+          <div className="header-right">
+            <div className="search-box">
+              <span className="material-symbols-outlined">search</span>
+              <input
+                id="global-search-input"
+                type="text"
+                placeholder="Search tasks, meetings... [/]"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+              <button
+                type="button"
+                className="palette-open-trigger"
+                onClick={() => setIsPaletteOpen(true)}
+                title="Open Command Palette (Ctrl+K)"
+              >
+                Ctrl+K
+              </button>
+            </div>
+            <button className="btn-blue" onClick={() => handleOpenCreateTask(selectedDate)}>
+              <span className="material-symbols-outlined">add</span>
+              <span>+ New Task</span>
+              <span className="kbd-hint">T</span>
+            </button>
+            <button className="btn-green" onClick={() => handleOpenCreateMeeting(selectedDate)}>
+              <span className="material-symbols-outlined">event</span>
+              <span>+ Schedule Meeting</span>
+              <span className="kbd-hint">M</span>
+            </button>
+          </div>
         </div>
       </header>
 
-      {/* Metrics Summary */}
-      <div className="stats-bar">
-        <div className="stat-card">
-          <span className="stat-label">Total Scheduled</span>
-          <span className="stat-value">{totalCount}</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-label">High Priority</span>
-          <span className="stat-value text-blue">{highPriorityCount}</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-label">Meetings</span>
-          <span className="stat-value">{meetingCount}</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-label">Pending</span>
-          <span className="stat-value">{pendingCount}</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-label">Database</span>
-          <span className={`status-pill ${serverOnline ? 'online' : 'offline'}`}>
-            {serverOnline ? 'Connected' : 'Offline'}
-          </span>
-        </div>
-      </div>
-
-      {/* Controls & Filters */}
-      <div className="controls-bar">
-        <div className="view-toggle">
-          <button
-            className={`view-btn ${viewMode === 'calendar' ? 'active' : ''}`}
-            onClick={() => setViewMode('calendar')}
-          >
-            Calendar & Day View
-          </button>
-          <button
-            className={`view-btn ${viewMode === 'table' ? 'active' : ''}`}
-            onClick={() => { setViewMode('table'); setSelectedDate(null); }}
-          >
-            Table View
-          </button>
-          <button
-            className={`view-btn ${viewMode === 'cards' ? 'active' : ''}`}
-            onClick={() => { setViewMode('cards'); setSelectedDate(null); }}
-          >
-            Cards View
-          </button>
-        </div>
-
-        <input
-          type="text"
-          className="search-input"
-          placeholder="Search by title, attendees, or notes..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
-
-        <div className="filter-group">
-          {['All', 'task', 'meeting'].map((t) => (
+      {/* Main Workspace */}
+      <main className="workspace-container">
+        {/* Workspace Title & Live Status */}
+        <div className="workspace-header">
+          <div>
+            <h1>Executive Workspace Overview</h1>
+            <p style={{ margin: 0, fontWeight: '600' }}>Manage tasks and schedule meetings with clear priorities</p>
+          </div>
+          <div className="workspace-header-badges">
             <button
-              key={t}
-              className={`filter-btn ${typeFilter === t ? 'active' : ''}`}
-              onClick={() => setTypeFilter(t)}
+              type="button"
+              className={`alert-toggle-pill ${notificationsEnabled ? 'active' : ''}`}
+              onClick={handleRequestNotificationPermission}
+              title={notificationsEnabled ? 'Desktop alerts enabled (2-min warning)' : 'Click to enable desktop meeting notifications'}
             >
-              {t === 'All' ? 'All Items' : t === 'task' ? 'Tasks Only' : 'Meetings Only'}
+              <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>
+                {notificationsEnabled ? 'notifications_active' : 'notifications_none'}
+              </span>
+              <span>{notificationsEnabled ? 'Alerts Active (2m)' : 'Enable Alerts'}</span>
             </button>
-          ))}
+            <div className="live-sync-pill">
+              <span className="pulse-dot"></span>
+              <span>{serverOnline ? 'Backend Connected' : 'Local Offline Mode'}</span>
+            </div>
+          </div>
         </div>
 
-        <div className="filter-group">
-          {['All', 'Pending', 'Completed'].map((status) => (
-            <button
-              key={status}
-              className={`filter-btn ${statusFilter === status ? 'active' : ''}`}
-              onClick={() => setStatusFilter(status)}
-            >
-              {status}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Calendar View */}
-      {viewMode === 'calendar' && (
-        <div className="calendar-layout">
-          <div className="calendar-widget">
-            <div className="calendar-header">
-              <h3>{monthNames[calMonth]} {calYear}</h3>
-              <div className="cal-nav">
-                <button className="btn-icon" onClick={handlePrevMonth}>Prev</button>
-                <button className="btn-icon" onClick={() => setCurrentCalendarDate(new Date())}>Today</button>
-                <button className="btn-icon" onClick={handleNextMonth}>Next</button>
+        {/* Morning Overdue Triage Bar */}
+        {overdueTasks.length > 0 && !dismissTriage && (
+          <div className="overdue-triage-bar">
+            <div className="triage-left">
+              <span className="material-symbols-outlined triage-icon">warning</span>
+              <div>
+                <strong>Overdue Backlog:</strong> {overdueTasks.length} incomplete task{overdueTasks.length > 1 ? 's' : ''} from past dates.
               </div>
             </div>
-
-            <div className="calendar-weekdays">
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => (
-                <div key={d} className="cal-weekday">{d}</div>
-              ))}
+            <div className="triage-actions">
+              <button className="triage-btn-primary" onClick={handleRolloverAllOverdue}>
+                Move All to Today ({todayStr})
+              </button>
+              <button className="triage-btn-secondary" onClick={() => setDismissTriage(true)}>
+                Dismiss
+              </button>
             </div>
+          </div>
+        )}
 
-            <div className="calendar-days-grid">
-              {Array.from({ length: firstDayIndex }).map((_, i) => (
-                <div key={`empty-${i}`} className="cal-day empty"></div>
-              ))}
-
-              {Array.from({ length: daysInMonth }).map((_, i) => {
-                const dayNum = i + 1;
-                const formattedDay = String(dayNum).padStart(2, '0');
-                const formattedMonth = String(calMonth + 1).padStart(2, '0');
-                const dateStr = `${calYear}-${formattedMonth}-${formattedDay}`;
-                const dayItems = (itemsByDate[dateStr] || []).sort(
-                  (a, b) => (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2)
-                );
-                const isSelected = selectedDate === dateStr;
-                const isToday = new Date().toISOString().split('T')[0] === dateStr;
-
-                return (
-                  <div
-                    key={dateStr}
-                    className={`cal-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''} ${dayItems.length > 0 ? 'has-tasks' : ''}`}
-                    onClick={() => setSelectedDate(dateStr)}
+        {/* Up Next Focus Hero Banner */}
+        <div className="up-next-banner">
+          <div className="up-next-badge">UP NEXT</div>
+          {upNextMeeting ? (
+            <div className="up-next-content">
+              <div className="up-next-info">
+                <div className="up-next-title-row">
+                  <h3 className="up-next-title">{upNextMeeting.title}</h3>
+                  <span className="countdown-pill">{getCountdownText(upNextMeeting)}</span>
+                  <span className="time-pill">{upNextMeeting.time}</span>
+                </div>
+                {upNextMeeting.attendees && (
+                  <div className="up-next-attendees">Attendees: {upNextMeeting.attendees}</div>
+                )}
+                {upNextMeeting.notes && (
+                  <div className="up-next-notes">{upNextMeeting.notes}</div>
+                )}
+              </div>
+              <div className="up-next-actions">
+                {upNextMeeting.link && (
+                  <a
+                    href={upNextMeeting.link}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="up-next-join-btn"
                   >
-                    <div className="cal-day-top">
-                      <span className="day-number">{dayNum}</span>
-                      {dayItems.some((it) => it.priority === 'High' && it.status !== 'Completed') && (
-                        <span className="cal-priority-dot" title="High Priority"></span>
-                      )}
-                    </div>
+                    <span className="material-symbols-outlined">videocam</span>
+                    <span>Join Call</span>
+                  </a>
+                )}
+                <button
+                  className="up-next-copy-btn"
+                  onClick={() => handleAddToGoogleCalendar(upNextMeeting)}
+                  title="Add to Google Calendar"
+                >
+                  + GCal
+                </button>
+                <button
+                  className="up-next-copy-btn"
+                  onClick={() => handleCopyMeetingInvite(upNextMeeting)}
+                >
+                  Copy Invite
+                </button>
+                {upNextMeeting.notes && (
+                  <button
+                    className="up-next-copy-btn"
+                    onClick={() => handleConvertNotesToTasks(upNextMeeting)}
+                    title="Extract notes into standalone tasks for tomorrow"
+                  >
+                    Notes → Tasks
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="up-next-empty">
+              <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
+              <span>Schedule Clear: All meetings concluded for today</span>
+            </div>
+          )}
+        </div>
 
-                    <div className="cal-tasks-container">
-                      {dayItems.slice(0, 2).map((it) => {
-                        const isMeeting = Boolean(it.link || (it.attendees && it.attendees.trim() !== ''));
-                        return (
-                          <div
-                            key={it.id}
-                            className={`cal-task-chip priority-${(it.priority || 'medium').toLowerCase()} ${it.status === 'Completed' ? 'completed' : ''}`}
-                            title={`${it.time} - ${it.title} (${isMeeting ? 'Meeting' : 'Task'}, ${it.priority || 'Medium'} Priority)`}
-                          >
-                            <span className="chip-p-label">{it.priority === 'High' ? 'H' : it.priority === 'Low' ? 'L' : 'M'}</span>
-                            <span className="chip-title">{isMeeting ? '[M] ' : ''}{it.title}</span>
-                          </div>
-                        );
-                      })}
-                      {dayItems.length > 2 && (
-                        <span className="cal-tasks-more">+{dayItems.length - 2} more</span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+        {/* Bento Metric Cards (Solid Black Borders, 3 colors) */}
+        <div className="bento-grid">
+          <div className="bento-card blue">
+            <div className="bento-top">
+              <span className="bento-label">Total Scheduled</span>
+              <span className="material-symbols-outlined" style={{ color: 'var(--color-blue)' }}>calendar_month</span>
+            </div>
+            <div className="bento-value-row">
+              <span className="bento-value">{totalCount}</span>
             </div>
           </div>
 
-          {/* Day Schedule / Tasks Pane */}
-          <div className="date-tasks-pane">
-            <div className="pane-header">
-              <div>
-                <h3>Schedule for: <span>{selectedDate || 'All Dates'}</span></h3>
-                <span className="task-count">{filteredAndSortedItems.length} item(s)</span>
-              </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-sm btn-outline" onClick={() => handleOpenCreateTask(selectedDate)}>
-                  + Task
-                </button>
-                <button className="btn btn-sm btn-primary" onClick={() => handleOpenCreateMeeting(selectedDate)}>
-                  + Meeting
-                </button>
-              </div>
+          <div className="bento-card red">
+            <div className="bento-top">
+              <span className="bento-label">High Priority</span>
+              <span className="material-symbols-outlined" style={{ color: 'var(--color-red)' }}>priority_high</span>
             </div>
+            <div className="bento-value-row">
+              <span className="bento-value" style={{ color: 'var(--color-red)' }}>{highPriorityCount}</span>
+            </div>
+          </div>
 
-            {filteredAndSortedItems.length === 0 ? (
-              <div className="empty-day-state">
-                <p>Nothing scheduled for this date.</p>
-                <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                  <button className="btn btn-sm btn-outline" onClick={() => handleOpenCreateTask(selectedDate)}>
-                    Add Task
-                  </button>
-                  <button className="btn btn-sm btn-secondary" onClick={() => handleOpenCreateMeeting(selectedDate)}>
-                    Schedule Meeting
-                  </button>
+          <div className="bento-card green">
+            <div className="bento-top">
+              <span className="bento-label">Meetings</span>
+              <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>groups</span>
+            </div>
+            <div className="bento-value-row">
+              <span className="bento-value" style={{ color: 'var(--color-green)' }}>{meetingCount}</span>
+            </div>
+          </div>
+
+          <div className="bento-card black">
+            <div className="bento-top">
+              <span className="bento-label">Pending</span>
+              <span className="material-symbols-outlined">pending_actions</span>
+            </div>
+            <div className="bento-value-row">
+              <span className="bento-value">{pendingCount}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* View Switchers & Filters Bar */}
+        <div className="view-filter-bar">
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            <button
+              className={`tab-btn ${viewMode === 'calendar' ? 'active' : ''}`}
+              onClick={() => setViewMode('calendar')}
+            >
+              Calendar &amp; Day View
+            </button>
+            <button
+              className={`tab-btn ${viewMode === 'table' ? 'active' : ''}`}
+              onClick={() => setViewMode('table')}
+            >
+              Table View
+            </button>
+            <button
+              className={`tab-btn ${viewMode === 'cards' ? 'active' : ''}`}
+              onClick={() => setViewMode('cards')}
+            >
+              Cards View
+            </button>
+            <button
+              className={`tab-btn ${viewMode === 'analytics' ? 'active' : ''}`}
+              onClick={() => setViewMode('analytics')}
+            >
+              Analytics View
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            <button
+              className={`filter-pill ${typeFilter === 'All' && statusFilter === 'All' ? 'active' : ''}`}
+              onClick={() => { setTypeFilter('All'); setStatusFilter('All'); }}
+            >
+              All Items
+            </button>
+            <button
+              className={`filter-pill ${statusFilter === 'Pending' ? 'active' : ''}`}
+              onClick={() => setStatusFilter(statusFilter === 'Pending' ? 'All' : 'Pending')}
+            >
+              Pending
+            </button>
+            <button
+              className={`filter-pill ${statusFilter === 'Completed' ? 'active' : ''}`}
+              onClick={() => setStatusFilter(statusFilter === 'Completed' ? 'All' : 'Completed')}
+            >
+              Completed
+            </button>
+            <button
+              className={`filter-pill ${typeFilter === 'tasks' ? 'active' : ''}`}
+              onClick={() => setTypeFilter(typeFilter === 'tasks' ? 'All' : 'tasks')}
+            >
+              Tasks Only
+            </button>
+            <button
+              className={`filter-pill ${typeFilter === 'meetings' ? 'active' : ''}`}
+              onClick={() => setTypeFilter(typeFilter === 'meetings' ? 'All' : 'meetings')}
+            >
+              Meetings Only
+            </button>
+          </div>
+        </div>
+
+        {/* 2-Column Content Layout */}
+        <div className="content-grid">
+          {/* Left Main View (Calendar, Table, Cards, Analytics) */}
+          <div>
+            {/* Calendar View */}
+            {viewMode === 'calendar' && (
+              <div className="calendar-card">
+                <div className="calendar-top">
+                  <h2>{monthNames[calMonth]} {calYear}</h2>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button className="cal-nav-btn" onClick={handlePrevMonth} title="Previous Month">
+                      <span className="material-symbols-outlined">chevron_left</span>
+                    </button>
+                    <button className="cal-nav-btn" onClick={() => setCurrentCalendarDate(new Date())}>
+                      Today
+                    </button>
+                    <button className="cal-nav-btn" onClick={handleNextMonth} title="Next Month">
+                      <span className="material-symbols-outlined">chevron_right</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="calendar-weekdays-grid">
+                  <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+                </div>
+
+                <div className="calendar-matrix">
+                  {Array.from({ length: firstDayIndex }).map((_, i) => (
+                    <div key={`empty-${i}`} className="cal-matrix-day empty"></div>
+                  ))}
+
+                  {Array.from({ length: daysInMonth }).map((_, i) => {
+                    const dayNum = i + 1;
+                    const formattedDay = String(dayNum).padStart(2, '0');
+                    const formattedMonth = String(calMonth + 1).padStart(2, '0');
+                    const dateStr = `${calYear}-${formattedMonth}-${formattedDay}`;
+                    const dayItems = (itemsByDate[dateStr] || []).sort(
+                      (a, b) => (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2)
+                    );
+                    const isSelected = selectedDate === dateStr;
+                    const isToday = new Date().toISOString().split('T')[0] === dateStr;
+
+                    return (
+                      <div
+                        key={dateStr}
+                        className={`cal-matrix-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+                        onClick={() => setSelectedDate(dateStr)}
+                      >
+                        <div className="day-header-number">{dayNum}</div>
+                        <div>
+                          {dayItems.slice(0, 2).map((it) => {
+                            const itMeeting = isMeeting(it);
+                            const isUrgent = it.priority === 'High';
+                            return (
+                              <span
+                                key={it.id}
+                                className={`cal-badge ${isUrgent ? 'urgent' : itMeeting ? 'meeting' : 'task'}`}
+                                title={`${it.time} - ${it.title}`}
+                              >
+                                {itMeeting ? '[M] ' : ''}{it.title}
+                              </span>
+                            );
+                          })}
+                          {dayItems.length > 2 && (
+                            <span className="cal-badge" style={{ color: 'var(--color-black)', background: '#ffffff' }}>
+                              +{dayItems.length - 2} more
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-            ) : (
-              <div className="day-tasks-list">
-                {filteredAndSortedItems.map((item) => {
-                  const isMeeting = Boolean(item.link || (item.attendees && item.attendees.trim() !== ''));
-                  return (
-                    <div key={item.id} className={`task-item ${item.status === 'Completed' ? 'task-completed' : ''}`}>
-                      <div className="task-main">
-                        <div className="task-header-line">
-                          <span className="task-time">{item.time}</span>
-                          <span className={`priority-tag priority-${(item.priority || 'medium').toLowerCase()}`}>
-                            {item.priority || 'Medium'} Priority
+            )}
+
+            {/* Table View */}
+            {viewMode === 'table' && (
+              <div className="master-table-card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <h2 style={{ fontSize: '18px', fontWeight: '800', margin: 0 }}>All Tasks &amp; Meetings Table</h2>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button className="btn-blue" onClick={() => handleOpenCreateTask(selectedDate)}>
+                      + Add Task
+                    </button>
+                    <button className="btn-green" onClick={() => handleOpenCreateMeeting(selectedDate)}>
+                      + Schedule Meeting
+                    </button>
+                  </div>
+                </div>
+
+                <table className="master-table">
+                  <thead>
+                    <tr>
+                      <th>Title</th>
+                      <th>Type</th>
+                      <th>Priority</th>
+                      <th>Date &amp; Time</th>
+                      <th>Attendees / Link</th>
+                      <th>Status</th>
+                      <th style={{ textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredAndSortedItems.length === 0 ? (
+                      <tr>
+                        <td colSpan="7" style={{ textAlign: 'center', padding: '32px', fontWeight: '600' }}>
+                          No scheduled items found.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredAndSortedItems.map((it) => {
+                        const itMeeting = isMeeting(it);
+                        return (
+                          <tr key={it.id}>
+                            <td style={{ fontWeight: '700' }}>{it.title}</td>
+                            <td>
+                              <span className={`type-chip ${itMeeting ? 'meeting' : 'task'}`}>
+                                {itMeeting ? 'Meeting' : 'Task'}
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`priority-chip ${(it.priority || 'medium').toLowerCase()}`}>
+                                {it.priority || 'Medium'}
+                              </span>
+                            </td>
+                            <td>
+                              <strong>{it.date}</strong>
+                              <div><small>{it.time}</small></div>
+                            </td>
+                            <td>
+                              {it.link ? (
+                                <a href={it.link.startsWith('http') ? it.link : `https://${it.link}`} target="_blank" rel="noreferrer" className="item-link-btn">
+                                  Join Link
+                                </a>
+                              ) : it.attendees ? (
+                                <small>{it.attendees}</small>
+                              ) : (
+                                '—'
+                              )}
+                            </td>
+                            <td>
+                              <span style={{ fontWeight: '700', color: it.status === 'Completed' ? 'var(--color-green)' : 'var(--color-black)' }}>
+                                {it.status === 'Completed' ? 'Completed' : 'Pending'}
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div className="table-actions-cell">
+                                <button className="item-btn green compact" onClick={() => handleToggleStatus(it)}>
+                                  {it.status === 'Completed' ? 'Undo' : 'Done'}
+                                </button>
+                                {!itMeeting ? (
+                                  <button className="item-btn primary compact" onClick={() => handleMoveToTomorrow(it)}>
+                                    → Tomorrow
+                                  </button>
+                                ) : (
+                                  <button className="item-btn white compact" onClick={() => handleAddToGoogleCalendar(it)} title="Add to Google Calendar">
+                                    + GCal
+                                  </button>
+                                )}
+                                <button className="item-btn white compact" onClick={() => handleOpenEdit(it)}>
+                                  Edit
+                                </button>
+                                <button className="item-btn danger compact" onClick={() => handleDelete(it.id)}>
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Cards View */}
+            {viewMode === 'cards' && (
+              <div className="cards-view-grid">
+                {filteredAndSortedItems.length === 0 ? (
+                  <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', border: '1.5px solid var(--border-black)', borderRadius: '8px' }}>
+                    No items found matching the selected filters.
+                  </div>
+                ) : (
+                  filteredAndSortedItems.map((it) => {
+                    const itMeeting = isMeeting(it);
+                    return (
+                      <div key={it.id} className={`schedule-item ${itMeeting ? 'meeting-border' : 'task-border'}`}>
+                        <div className="item-tags-row">
+                          <span className={`type-chip ${itMeeting ? 'meeting' : 'task'}`}>
+                            {itMeeting ? 'Meeting' : 'Task'}
                           </span>
-                          <span className="task-status-tag">{isMeeting ? 'Meeting' : 'Task'}</span>
-                          <span className="task-status-tag">{item.status === 'Completed' ? 'Completed' : 'Pending'}</span>
+                          <span className={`priority-chip ${(it.priority || 'medium').toLowerCase()}`}>
+                            {it.priority || 'Medium'} Priority
+                          </span>
                         </div>
 
-                        <h4 className="task-title">{item.title}</h4>
+                        <h3 className="item-title">{it.title}</h3>
+                        {it.notes && <p className="item-desc">{it.notes}</p>}
 
-                        {item.notes && (
-                          <div className="task-discussion-box">
-                            <p>{item.notes}</p>
+                        {it.attendees && (
+                          <div style={{ fontSize: '12px', fontWeight: '600', marginBottom: '8px' }}>
+                            <strong>Attendees:</strong> {it.attendees}
                           </div>
                         )}
 
-                        {item.attendees && (
-                          <div className="task-attendees">Attendees: {item.attendees}</div>
-                        )}
-
-                        {item.link && (
-                          <a
-                            href={item.link.startsWith('http') ? item.link : `https://${item.link}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="meet-link"
-                          >
-                            Join Meeting Link
-                          </a>
-                        )}
+                        <div className="item-footer">
+                          <div className="item-footer-meta">
+                            <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>schedule</span>
+                            <span>{it.date} at {it.time}</span>
+                          </div>
+                          <div className="item-footer-actions">
+                            <div className="actions-primary">
+                              <button className="item-btn green" onClick={() => handleToggleStatus(it)}>
+                                {it.status === 'Completed' ? 'Undo' : 'Done'}
+                              </button>
+                              {itMeeting && it.link && (
+                                <a
+                                  href={it.link.startsWith('http') ? it.link : `https://${it.link}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="item-btn green join-link"
+                                >
+                                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>videocam</span>
+                                  <span>Join</span>
+                                </a>
+                              )}
+                              {!itMeeting && (
+                                <button className="item-btn primary" onClick={() => handleMoveToTomorrow(it)}>
+                                  → Tomorrow
+                                </button>
+                              )}
+                            </div>
+                            <div className="actions-utility">
+                              {itMeeting && (
+                                <>
+                                  <button className="item-btn white compact" onClick={() => handleAddToGoogleCalendar(it)} title="Add to Google Calendar">
+                                    + GCal
+                                  </button>
+                                  <button className="item-btn white compact" onClick={() => handleCopyMeetingInvite(it)} title="Copy Invite">
+                                    Copy
+                                  </button>
+                                  {it.notes && (
+                                    <button
+                                      className="item-btn white compact"
+                                      onClick={() => handleConvertNotesToTasks(it)}
+                                      title="Extract notes into tasks for tomorrow"
+                                    >
+                                      Notes → Tasks
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                              <button className="item-btn white compact" onClick={() => handleOpenEdit(it)}>
+                                Edit
+                              </button>
+                              <button className="item-btn danger compact" onClick={() => handleDelete(it.id)}>
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </div>
                       </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
 
-                      <div className="task-actions">
-                        <button
-                          className="btn btn-sm btn-outline"
-                          onClick={() => handleToggleStatus(item)}
-                        >
-                          {item.status === 'Completed' ? 'Mark Pending' : 'Mark Done'}
-                        </button>
-                        <button
-                          className="btn btn-sm btn-secondary"
-                          onClick={() => handleOpenEdit(item)}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className="btn btn-sm btn-danger"
-                          onClick={() => handleDelete(item.id)}
-                        >
-                          Delete
-                        </button>
+            {/* Analytics View */}
+            {viewMode === 'analytics' && (
+              <div className="analytics-card">
+                <h2 style={{ fontSize: '18px', fontWeight: '800', margin: '0 0 6px' }}>Productivity &amp; Meeting Analytics</h2>
+                <p style={{ fontSize: '13px', margin: 0, fontWeight: '600' }}>
+                  Performance breakdown for scheduled tasks and executive meetings.
+                </p>
+
+                <div className="analytics-grid">
+                  <div className="analytics-metric-box">
+                    <span style={{ fontSize: '13px', fontWeight: '700' }}>Task Completion Rate</span>
+                    <div className="analytics-val" style={{ color: 'var(--color-blue)' }}>{completionRate}%</div>
+                    <div className="progress-bar-bg">
+                      <div className="progress-bar-fill" style={{ width: `${completionRate}%`, background: 'var(--color-blue)' }}></div>
+                    </div>
+                  </div>
+
+                  <div className="analytics-metric-box">
+                    <span style={{ fontSize: '13px', fontWeight: '700' }}>Scheduled Meetings</span>
+                    <div className="analytics-val" style={{ color: 'var(--color-green)' }}>{meetingCount} sessions</div>
+                    <div className="progress-bar-bg">
+                      <div
+                        className="progress-bar-fill"
+                        style={{ width: `${totalCount > 0 ? (meetingCount / totalCount) * 100 : 0}%`, background: 'var(--color-green)' }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  <div className="analytics-metric-box">
+                    <span style={{ fontSize: '13px', fontWeight: '700' }}>High Priority Items</span>
+                    <div className="analytics-val" style={{ color: 'var(--color-red)' }}>{highPriorityCount} urgent</div>
+                    <div className="progress-bar-bg">
+                      <div
+                        className="progress-bar-fill"
+                        style={{ width: `${totalCount > 0 ? (highPriorityCount / totalCount) * 100 : 0}%`, background: 'var(--color-red)' }}
+                      ></div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 90-Day Activity Heatmap Card */}
+                <div className="heatmap-section">
+                  <div className="heatmap-header">
+                    <div>
+                      <h3 className="heatmap-title">90-Day Consistency Heatmap</h3>
+                      <p className="heatmap-subtitle">Completed tasks and scheduled meetings over the last 3 months</p>
+                    </div>
+                    <div className="heatmap-stats">
+                      <div className="heatmap-stat-chip">
+                        <span className="stat-label">Current Streak</span>
+                        <span className="stat-val">{activeStreak} Days</span>
+                      </div>
+                      <div className="heatmap-stat-chip">
+                        <span className="stat-label">90-Day Output</span>
+                        <span className="stat-val">{heatmapTotalActions} Actions</span>
                       </div>
                     </div>
-                  );
-                })}
+                  </div>
+
+                  <div className="heatmap-grid">
+                    {heatmapDays.map((d) => {
+                      let levelClass = 'level-0';
+                      if (d.score === 1) levelClass = 'level-1';
+                      else if (d.score === 2) levelClass = 'level-2';
+                      else if (d.score === 3) levelClass = 'level-3';
+                      else if (d.score >= 4) levelClass = 'level-4';
+
+                      return (
+                        <div
+                          key={d.date}
+                          className={`heatmap-cell ${levelClass} ${selectedDate === d.date ? 'selected' : ''}`}
+                          title={`${d.date}: ${d.completedCount} completed, ${d.meetingsCount} meetings`}
+                          onClick={() => {
+                            setSelectedDate(d.date);
+                            showToast(`Selected date: ${d.date}`);
+                          }}
+                        ></div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="heatmap-footer">
+                    <span style={{ fontSize: '11px', color: '#64748b', fontWeight: '700' }}>
+                      Click any cell to inspect schedule for that day
+                    </span>
+                    <div className="heatmap-legend">
+                      <span>Less</span>
+                      <div className="legend-cell level-0"></div>
+                      <div className="legend-cell level-1"></div>
+                      <div className="legend-cell level-2"></div>
+                      <div className="legend-cell level-3"></div>
+                      <div className="legend-cell level-4"></div>
+                      <span>More</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>
-        </div>
-      )}
 
-      {/* Table View */}
-      {viewMode === 'table' && (
-        <div className="table-wrapper">
-          <table className="meetings-table">
-            <thead>
-              <tr>
-                <th>Date & Time</th>
-                <th>Type</th>
-                <th>Priority</th>
-                <th>Title</th>
-                <th>Attendees / Details</th>
-                <th>Link</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredAndSortedItems.length === 0 ? (
-                <tr>
-                  <td colSpan="8" className="table-empty">No items found.</td>
-                </tr>
-              ) : (
-                filteredAndSortedItems.map((item) => {
-                  const isMeeting = Boolean(item.link || (item.attendees && item.attendees.trim() !== ''));
-                  return (
-                    <tr key={item.id} className={item.status === 'Completed' ? 'task-completed' : ''}>
-                      <td className="td-datetime">
-                        <strong>{item.date}</strong>
-                        <small>{item.time}</small>
-                      </td>
-                      <td>
-                        <span className="task-status-tag">{isMeeting ? 'Meeting' : 'Task'}</span>
-                      </td>
-                      <td>
-                        <span className={`priority-tag priority-${(item.priority || 'medium').toLowerCase()}`}>
-                          {item.priority || 'Medium'}
-                        </span>
-                      </td>
-                      <td className="td-title">{item.title}</td>
-                      <td className="td-notes" title={item.notes || item.attendees}>
-                        {item.attendees ? `Attendees: ${item.attendees}` : item.notes || '—'}
-                      </td>
-                      <td>
-                        {item.link ? (
-                          <a
-                            href={item.link.startsWith('http') ? item.link : `https://${item.link}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="meet-link"
-                          >
-                            Join
-                          </a>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td>
-                        <span className="status-badge">{item.status === 'Completed' ? 'Completed' : 'Pending'}</span>
-                      </td>
-                      <td className="td-actions">
-                        <button className="btn-link-action" onClick={() => handleToggleStatus(item)}>
-                          {item.status === 'Completed' ? 'Undo' : 'Done'}
-                        </button>
-                        <button className="btn-link-action" onClick={() => handleOpenEdit(item)}>
-                          Edit
-                        </button>
-                        <button className="btn-link-action" onClick={() => handleDelete(item.id)}>
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
+          {/* Right Column (Day Schedule Sidebar) */}
+          <div>
+            <div className="schedule-card">
+              <div className="schedule-card-header">
+                <div>
+                  <span style={{ fontSize: '12px', fontWeight: '700' }}>Schedule for:</span>
+                  <h3 className="schedule-date-title">{selectedDate}</h3>
+                </div>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button className="cal-nav-btn" onClick={() => handleOpenCreateTask(selectedDate)} title="Add Task">
+                    <span className="material-symbols-outlined" style={{ color: 'var(--color-blue)' }}>add</span>
+                  </button>
+                  <button className="cal-nav-btn" onClick={() => handleOpenCreateMeeting(selectedDate)} title="Schedule Meeting">
+                    <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>event</span>
+                  </button>
+                </div>
+              </div>
 
-      {/* Cards View */}
-      {viewMode === 'cards' && (
-        <div className="meetings-grid">
-          {filteredAndSortedItems.length === 0 ? (
-            <div className="empty-state">No items found.</div>
-          ) : (
-            filteredAndSortedItems.map((item) => {
-              const isMeeting = Boolean(item.link || (item.attendees && item.attendees.trim() !== ''));
-              return (
-                <div key={item.id} className={`meeting-card ${item.status === 'Completed' ? 'task-completed' : ''}`}>
-                  <div className="card-top">
-                    <span className="badge-datetime">{item.date} at {item.time}</span>
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      <span className="task-status-tag">{isMeeting ? 'Meeting' : 'Task'}</span>
-                      <span className={`priority-tag priority-${(item.priority || 'medium').toLowerCase()}`}>
-                        {item.priority || 'Medium'}
-                      </span>
-                    </div>
-                  </div>
+              <div style={{ fontSize: '12px', fontWeight: '700', marginBottom: '12px' }}>
+                {dayScheduleItems.length} item(s) scheduled
+              </div>
 
-                  <h3 className="card-title">{item.title}</h3>
-
-                  {item.notes && (
-                    <div className="task-discussion-box">
-                      <p>{item.notes}</p>
-                    </div>
-                  )}
-
-                  {item.attendees && (
-                    <p className="card-field">
-                      <strong>Attendees:</strong> {item.attendees}
-                    </p>
-                  )}
-
-                  {item.link && (
-                    <p className="card-field">
-                      <a
-                        href={item.link.startsWith('http') ? item.link : `https://${item.link}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="meet-link"
-                      >
-                        Join Meeting Link
-                      </a>
-                    </p>
-                  )}
-
-                  <div className="card-actions">
-                    <button
-                      className="btn btn-sm btn-outline"
-                      onClick={() => handleToggleStatus(item)}
-                    >
-                      {item.status === 'Completed' ? 'Mark Pending' : 'Mark Done'}
+              {dayScheduleItems.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '32px 16px' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '32px', marginBottom: '8px' }}>
+                    event_busy
+                  </span>
+                  <p style={{ margin: '0 0 14px', fontSize: '13px', fontWeight: '700' }}>Nothing scheduled for this date.</p>
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                    <button className="btn-blue" onClick={() => handleOpenCreateTask(selectedDate)}>
+                      + Task
                     </button>
-                    <div className="actions-right">
-                      <button
-                        className="btn btn-sm btn-secondary"
-                        onClick={() => handleOpenEdit(item)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        onClick={() => handleDelete(item.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
+                    <button className="btn-green" onClick={() => handleOpenCreateMeeting(selectedDate)}>
+                      + Meeting
+                    </button>
                   </div>
                 </div>
-              );
-            })
-          )}
-        </div>
-      )}
+              ) : (
+                <div>
+                  {dayScheduleItems.map((it) => {
+                    const itMeeting = isMeeting(it);
+                    return (
+                      <div key={it.id} className={`schedule-item ${itMeeting ? 'meeting-border' : 'task-border'}`}>
+                        <div className="item-tags-row">
+                          <span className={`type-chip ${itMeeting ? 'meeting' : 'task'}`}>
+                            {itMeeting ? 'Meeting' : 'Task'}
+                          </span>
+                          <span className={`priority-chip ${(it.priority || 'medium').toLowerCase()}`}>
+                            {it.priority || 'Medium'} Priority
+                          </span>
+                        </div>
 
-      {/* Slide-out Drawer for Add and Edit */}
+                        <h4 className="item-title">{it.title}</h4>
+                        {it.notes && <p className="item-desc">{it.notes}</p>}
+
+                        {it.attendees && (
+                          <div style={{ fontSize: '11px', fontWeight: '700', marginBottom: '4px' }}>
+                            {it.attendees}
+                          </div>
+                        )}
+
+                        <div className="item-footer">
+                          <div className="item-footer-meta">
+                            <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>schedule</span>
+                            <span>{it.time}</span>
+                          </div>
+                          <div className="item-footer-actions">
+                            <div className="actions-primary">
+                              <button className="item-btn green" onClick={() => handleToggleStatus(it)}>
+                                {it.status === 'Completed' ? 'Undo' : 'Done'}
+                              </button>
+                              {itMeeting && it.link && (
+                                <a
+                                  href={it.link.startsWith('http') ? it.link : `https://${it.link}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="item-btn green join-link"
+                                >
+                                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>videocam</span>
+                                  <span>Join</span>
+                                </a>
+                              )}
+                              {!itMeeting && (
+                                <button className="item-btn primary" onClick={() => handleMoveToTomorrow(it)}>
+                                  → Tomorrow
+                                </button>
+                              )}
+                            </div>
+                            <div className="actions-utility">
+                              {itMeeting && (
+                                <>
+                                  <button className="item-btn white compact" onClick={() => handleAddToGoogleCalendar(it)} title="Add to Google Calendar">
+                                    + GCal
+                                  </button>
+                                  <button className="item-btn white compact" onClick={() => handleCopyMeetingInvite(it)} title="Copy Invite">
+                                    Copy
+                                  </button>
+                                  {it.notes && (
+                                    <button
+                                      className="item-btn white compact"
+                                      onClick={() => handleConvertNotesToTasks(it)}
+                                      title="Extract notes into tasks for tomorrow"
+                                    >
+                                      Notes → Tasks
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                              <button className="item-btn white compact" onClick={() => handleOpenEdit(it)}>
+                                Edit
+                              </button>
+                              <button className="item-btn danger compact" onClick={() => handleDelete(it.id)}>
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </main>
+
+      {/* Slide-out Side Drawer (Coming from right) */}
       {isDrawerOpen && (
         <div className="drawer-overlay" onClick={handleCloseDrawer}>
           <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
-              <h2>
+              <h3>
                 {editingId
-                  ? formType === 'meeting' ? 'Edit Meeting Details' : 'Edit Task Details'
-                  : formType === 'meeting' ? 'Schedule New Meeting' : 'Add New Task'}
-              </h2>
-              <button className="close-btn" onClick={handleCloseDrawer}>
+                  ? drawerType === 'meeting' ? 'Edit Meeting Details' : 'Edit Task Details'
+                  : drawerType === 'meeting' ? 'Schedule Meeting' : 'Add New Task'}
+              </h3>
+              <button className="close-drawer-btn" onClick={handleCloseDrawer}>
                 &times;
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="drawer-form">
-              <div className="form-group">
-                <label>{formType === 'meeting' ? 'Meeting Title *' : 'Task Title *'}</label>
+            <form onSubmit={handleSubmit}>
+              <div className="form-field">
+                <label>{drawerType === 'meeting' ? 'Meeting Subject *' : 'Task Title *'}</label>
                 <input
                   type="text"
                   required
-                  placeholder={
-                    formType === 'meeting'
-                      ? 'e.g., Sprint Planning, Townhall, Client Review'
-                      : 'e.g., Complete project report, Review PRs'
-                  }
+                  placeholder={drawerType === 'meeting' ? 'e.g., Executive Strategy Alignment' : 'e.g., Complete Budget Analysis'}
                   value={formData.title}
                   onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                 />
               </div>
 
-              <div className="form-row">
-                <div className="form-group">
+              <div className="form-row-2">
+                <div className="form-field">
                   <label>Date *</label>
                   <input
                     type="date"
@@ -680,31 +1513,33 @@ function App() {
                     onChange={(e) => setFormData({ ...formData, date: e.target.value })}
                   />
                 </div>
-                <div className="form-group">
-                  <label>Time *</label>
+
+                <div className="form-field">
+                  <label>{drawerType === 'meeting' ? 'Time Slot *' : 'Due Time *'}</label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g., 10:00 AM, 02:30 PM"
+                    placeholder="e.g., 10:00 AM, 02:00 PM - 03:30 PM"
                     value={formData.time}
                     onChange={(e) => setFormData({ ...formData, time: e.target.value })}
                   />
                 </div>
               </div>
 
-              <div className="form-row">
-                <div className="form-group">
+              <div className="form-row-2">
+                <div className="form-field">
                   <label>Priority *</label>
                   <select
                     value={formData.priority}
                     onChange={(e) => setFormData({ ...formData, priority: e.target.value })}
                   >
-                    <option value="High">High</option>
-                    <option value="Medium">Medium</option>
-                    <option value="Low">Low</option>
+                    <option value="High">High Priority (Red)</option>
+                    <option value="Medium">Medium Priority (Blue)</option>
+                    <option value="Low">Low Priority (Black)</option>
                   </select>
                 </div>
-                <div className="form-group">
+
+                <div className="form-field">
                   <label>Status</label>
                   <select
                     value={formData.status}
@@ -716,10 +1551,20 @@ function App() {
                 </div>
               </div>
 
-              {formType === 'meeting' && (
+              {drawerType === 'meeting' && (
                 <>
-                  <div className="form-group">
-                    <label>Meeting Link (Google Meet / Zoom)</label>
+                  <div className="form-field">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <label>Meeting Link (Google Meet / Zoom)</label>
+                      <button
+                        type="button"
+                        className="btn-link-detect"
+                        onClick={handleAutoDetectCallLink}
+                        title="Grab meeting URL from active browser tab or clipboard"
+                      >
+                        Grab Active Tab / Link
+                      </button>
+                    </div>
                     <input
                       type="text"
                       placeholder="https://meet.google.com/..."
@@ -728,11 +1573,11 @@ function App() {
                     />
                   </div>
 
-                  <div className="form-group">
+                  <div className="form-field">
                     <label>Attendees</label>
                     <input
                       type="text"
-                      placeholder="e.g., Sagar (Host), Priya Sharma, Rohan Gupta"
+                      placeholder="e.g., Sagar (Host), Priya Sharma, Dev Team"
                       value={formData.attendees}
                       onChange={(e) => setFormData({ ...formData, attendees: e.target.value })}
                     />
@@ -740,34 +1585,121 @@ function App() {
                 </>
               )}
 
-              <div className="form-group">
-                <label>{formType === 'meeting' ? 'Discussion Agenda / Notes' : 'Task Description / Notes'}</label>
+              <div className="form-field">
+                <label>{drawerType === 'meeting' ? 'Agenda & Notes' : 'Description / Notes'}</label>
                 <textarea
                   rows="4"
-                  placeholder={
-                    formType === 'meeting'
-                      ? 'Add key agenda points, topics to discuss...'
-                      : 'Add details, steps, or requirements for this task...'
-                  }
+                  placeholder="Add details, steps, or discussion agenda..."
                   value={formData.notes}
                   onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
                 ></textarea>
               </div>
 
               <div className="drawer-footer">
-                <button type="button" className="btn btn-secondary" onClick={handleCloseDrawer}>
+                <button type="button" className="btn-cancel" onClick={handleCloseDrawer}>
                   Cancel
                 </button>
-                <button type="submit" className="btn btn-primary">
+                <button
+                  type="submit"
+                  className={drawerType === 'meeting' ? 'btn-green' : 'btn-blue'}
+                >
                   {editingId
                     ? 'Save Changes'
-                    : formType === 'meeting'
+                    : drawerType === 'meeting'
                     ? 'Schedule Meeting'
-                    : 'Add Task'}
+                    : 'Save Task'}
                 </button>
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Command Palette Modal */}
+      {isPaletteOpen && (
+        <div className="palette-overlay" onClick={() => setIsPaletteOpen(false)}>
+          <div className="palette-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="palette-search-row">
+              <span className="material-symbols-outlined">search</span>
+              <input
+                type="text"
+                autoFocus
+                className="palette-input"
+                placeholder="Type a command or search items... (Esc to close)"
+                value={paletteQuery}
+                onChange={(e) => setPaletteQuery(e.target.value)}
+              />
+              <span className="kbd-hint">Esc</span>
+            </div>
+
+            <div className="palette-results">
+              {filteredCommands.length > 0 && (
+                <div className="palette-section">
+                  <div className="palette-section-title">COMMANDS</div>
+                  {filteredCommands.map((cmd) => (
+                    <div
+                      key={cmd.id}
+                      className="palette-row"
+                      onClick={cmd.action}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>{cmd.icon}</span>
+                        <span style={{ fontWeight: '700' }}>{cmd.title}</span>
+                      </div>
+                      <span className="palette-jump-hint">Execute</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {matchingPaletteItems.length > 0 && (
+                <div className="palette-section">
+                  <div className="palette-section-title">MATCHING ITEMS</div>
+                  {matchingPaletteItems.map((it) => {
+                    const itMeeting = isMeeting(it);
+                    return (
+                      <div
+                        key={it.id}
+                        className="palette-row"
+                        onClick={() => {
+                          setSelectedDate(it.date);
+                          handleOpenEdit(it);
+                          setIsPaletteOpen(false);
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span className={`type-chip ${itMeeting ? 'meeting' : 'task'}`}>
+                            {itMeeting ? 'Meeting' : 'Task'}
+                          </span>
+                          <span style={{ fontWeight: '700' }}>{it.title}</span>
+                        </div>
+                        <span style={{ fontSize: '11px', fontWeight: '700', color: '#64748b' }}>
+                          {it.date} at {it.time}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {filteredCommands.length === 0 && matchingPaletteItems.length === 0 && (
+                <div className="palette-empty">No commands or items found matching &quot;{paletteQuery}&quot;</div>
+              )}
+            </div>
+
+            <div className="palette-footer">
+              <span>Use <strong>Ctrl+K</strong> anywhere to toggle</span>
+              <span>PCS Meet Manager Command Center</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Alert */}
+      {toastMessage && (
+        <div className="toast-notice">
+          <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
+          <span>{toastMessage}</span>
         </div>
       )}
     </div>

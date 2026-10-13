@@ -14,8 +14,10 @@ const isProduction = process.env.NODE_ENV === 'production';
 app.use(cors());
 app.use(express.json());
 
-const db = new Database('meetings.db');
+const dbPath = path.join(__dirname, 'meetings.db');
+const db = new Database(dbPath);
 
+// Initialize schema
 db.exec(`
   CREATE TABLE IF NOT EXISTS meetings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,70 +28,41 @@ db.exec(`
     attendees TEXT,
     notes TEXT,
     priority TEXT DEFAULT 'Medium',
-    status TEXT DEFAULT 'Upcoming',
+    status TEXT DEFAULT 'Pending',
+    type TEXT DEFAULT 'task',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
 
 try {
   db.exec("ALTER TABLE meetings ADD COLUMN priority TEXT DEFAULT 'Medium'");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE meetings ADD COLUMN type TEXT DEFAULT 'task'");
+} catch (e) {}
+
+// Clean up any Saturday Townhall meetings scheduled on non-Saturdays
+try {
+  db.prepare(`
+    DELETE FROM meetings 
+    WHERE title LIKE '%Saturday Townhall%' 
+    AND strftime('%w', date) != '6'
+  `).run();
 } catch (e) {
-  // column already exists
+  console.error('Townhall date cleanup error:', e);
 }
 
-// seed townhall meetings for local testing
-const shouldSeedDemo = process.env.SEED_DEMO_DATA === 'true' || (!isProduction && process.env.SEED_DEMO_DATA !== 'false');
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', database: 'connected' });
+});
 
-if (shouldSeedDemo) {
-  try {
-    db.prepare(`
-      UPDATE meetings
-      SET attendees = 'Sagar (Organizer), Priya Sharma, Rahul Verma'
-      WHERE attendees LIKE '%Sarah%' OR attendees LIKE '%Candidate%' OR attendees = ''
-    `).run();
-
-    db.prepare(`
-      UPDATE meetings
-      SET attendees = 'Sagar (Host), Vikram Malhotra, Neha Patel, All Hands'
-      WHERE title = 'Saturday Townhall'
-    `).run();
-  } catch (e) {}
-
-  const insertStmt = db.prepare(`
-    INSERT INTO meetings (title, date, time, link, attendees, notes, priority, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const today = new Date();
-  for (let i = 0; i < 60; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() + i);
-    if (d.getDay() === 6) {
-      const dateStr = d.toISOString().split('T')[0];
-      const exists = db.prepare('SELECT id FROM meetings WHERE title = ? AND date = ?')
-        .get('Saturday Townhall', dateStr);
-
-      if (!exists) {
-        insertStmt.run(
-          'Saturday Townhall',
-          dateStr,
-          '11:00 PM',
-          'https://meet.google.com/townhall',
-          'Sagar (Host), Vikram Malhotra, Neha Patel, All Hands',
-          'Weekly townhall: Review milestones, key updates, team achievements, and open Q&A.',
-          'High',
-          'Upcoming'
-        );
-      }
-    }
-  }
-}
-
-// routes
+// Routes
 app.get('/api/meetings', (req, res) => {
   try {
-    const meetings = db.prepare('SELECT * FROM meetings ORDER BY date ASC, time ASC').all();
-    res.json(meetings);
+    const items = db.prepare('SELECT * FROM meetings ORDER BY date ASC, time ASC').all();
+    res.json(items);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -97,14 +70,16 @@ app.get('/api/meetings', (req, res) => {
 
 app.post('/api/meetings', (req, res) => {
   try {
-    const { title, date, time, link, attendees, notes, priority, status } = req.body;
+    const { title, date, time, link, attendees, notes, priority, status, type } = req.body;
     if (!title || !date || !time) {
       return res.status(400).json({ error: 'Title, date, and time are required fields.' });
     }
 
+    const itemType = type || (link || (attendees && attendees.trim() !== '') ? 'meeting' : 'task');
+
     const stmt = db.prepare(`
-      INSERT INTO meetings (title, date, time, link, attendees, notes, priority, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO meetings (title, date, time, link, attendees, notes, priority, status, type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -115,11 +90,12 @@ app.post('/api/meetings', (req, res) => {
       attendees || '',
       notes || '',
       priority || 'Medium',
-      status || 'Upcoming'
+      status || 'Pending',
+      itemType
     );
 
-    const newMeeting = db.prepare('SELECT * FROM meetings WHERE id = ?').get(result.lastInsertRowid);
-    res.status(201).json(newMeeting);
+    const newItem = db.prepare('SELECT * FROM meetings WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(newItem);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -128,11 +104,13 @@ app.post('/api/meetings', (req, res) => {
 app.put('/api/meetings/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const { title, date, time, link, attendees, notes, priority, status } = req.body;
+    const { title, date, time, link, attendees, notes, priority, status, type } = req.body;
+
+    const itemType = type || (link || (attendees && attendees.trim() !== '') ? 'meeting' : 'task');
 
     const stmt = db.prepare(`
       UPDATE meetings
-      SET title = ?, date = ?, time = ?, link = ?, attendees = ?, notes = ?, priority = ?, status = ?
+      SET title = ?, date = ?, time = ?, link = ?, attendees = ?, notes = ?, priority = ?, status = ?, type = ?
       WHERE id = ?
     `);
 
@@ -144,12 +122,13 @@ app.put('/api/meetings/:id', (req, res) => {
       attendees || '',
       notes || '',
       priority || 'Medium',
-      status || 'Upcoming',
+      status || 'Pending',
+      itemType,
       id
     );
 
     if (result.changes === 0) {
-      return res.status(404).json({ error: 'Meeting not found' });
+      return res.status(404).json({ error: 'Item not found' });
     }
 
     const updated = db.prepare('SELECT * FROM meetings WHERE id = ?').get(id);
@@ -166,16 +145,16 @@ app.delete('/api/meetings/:id', (req, res) => {
     const result = stmt.run(id);
 
     if (result.changes === 0) {
-      return res.status(404).json({ error: 'Meeting not found' });
+      return res.status(404).json({ error: 'Item not found' });
     }
 
-    res.json({ message: 'Meeting deleted successfully', id: Number(id) });
+    res.json({ message: 'Deleted successfully', id: Number(id) });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// serve frontend in production
+// Production static assets
 if (isProduction) {
   const clientDist = path.join(__dirname, '../client/dist');
   app.use(express.static(clientDist));
@@ -185,5 +164,5 @@ if (isProduction) {
 }
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Backend server running on port ${PORT}`);
 });
