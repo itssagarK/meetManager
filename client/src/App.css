@@ -68,28 +68,73 @@ body {
 }
 .search-box {
   position: relative;
+  display: flex;
+  align-items: center;
   width: 260px;
 }
-.search-box .material-symbols-outlined {
+.search-box .search-icon {
   position: absolute;
   left: 10px;
   top: 50%;
   transform: translateY(-50%);
-  color: var(--color-black);
+  color: #64748b;
+  font-size: 17px;
+  pointer-events: none;
 }
 .search-box input {
   width: 100%;
-  padding: 8px 12px 8px 34px;
+  height: 32px;
+  padding: 6px 58px 6px 32px;
   background: var(--color-white);
   border: 1.5px solid var(--border-black);
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--color-black);
   outline: none;
+  transition: all 0.15s ease;
 }
 .search-box input:focus {
   border-color: var(--color-blue);
-  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.2);
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.15);
+}
+.palette-open-trigger {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #f1f5f9;
+  color: var(--color-black);
+  border: 1px solid var(--border-black);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.palette-open-trigger:hover {
+  background: #e2e8f0;
+}
+.search-clear-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #f1f5f9;
+  color: var(--color-black);
+  border: 1px solid var(--border-black);
+  border-radius: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.search-clear-btn:hover {
+  background: #e2e8f0;
 }
 
 /* Buttons with Black Borders */
@@ -153,12 +198,23 @@ body {
 .workspace-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
 }
-.workspace-header h1 {
-  font-size: 24px;
-  font-weight: 800;
+.workspace-header h1,
+.workspace-title {
+  font-size: 22px;
+  font-weight: 900;
+  color: #09090b; /* deep dark executive black */
   margin: 0 0 4px;
+  letter-spacing: -0.025em;
+}
+.workspace-subtitle {
+  color: #1e293b; /* sharp dark slate, high contrast */
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
 }
 .workspace-header-badges {
   display: flex;
@@ -1030,22 +1086,7 @@ body {
   color: var(--color-black);
 }
 
-/* Palette Open Trigger Badge in Search Box */
-.palette-open-trigger {
-  background: var(--color-white);
-  color: var(--color-black);
-  border: 1px solid var(--border-black);
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 800;
-  padding: 2px 6px;
-  cursor: pointer;
-  line-height: 1.2;
-}
 
-.palette-open-trigger:hover {
-  background: #f1f5f9;
-}
 
 /* Command Palette Modal */
 .palette-overlay {
@@ -1276,17 +1317,33 @@ body {
 
 /* Responsive Adaptation for Side Panel and Narrow Screens */
 @media (max-width: 768px) {
+  .workspace-container {
+    padding: 14px;
+    gap: 14px;
+  }
   .header-inner {
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
+    padding: 12px 14px;
   }
   .header-right {
     flex-wrap: wrap;
-    justify-content: space-between;
+    gap: 8px;
   }
   .search-box {
     width: 100%;
+    order: 2;
+  }
+  .header-right .btn-blue,
+  .header-right .btn-green {
+    flex: 1;
+    order: 1;
+    justify-content: center;
+  }
+  .workspace-header {
+    flex-direction: column;
+    gap: 8px;
   }
   .bento-grid {
     grid-template-columns: repeat(2, 1fr);

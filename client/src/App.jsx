@@ -650,13 +650,36 @@ function App() {
   const completedCount = items.filter((it) => it.status === 'Completed').length;
   const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
-  // Selected Day items
-  const dayScheduleItems = (itemsByDate[selectedDate] || []).sort((a, b) => {
-    const pA = priorityOrder[a.priority] || 2;
-    const pB = priorityOrder[b.priority] || 2;
-    if (pA !== pB) return pA - pB;
-    return (a.time || '').localeCompare(b.time || '');
-  });
+  // Selected Day items (synchronized with search & filters)
+  const dayScheduleItems = (itemsByDate[selectedDate] || [])
+    .filter((it) => {
+      const itMeeting = isMeeting(it);
+      const matchesSearch =
+        !searchTerm ||
+        it.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (it.notes && it.notes.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (it.attendees && it.attendees.toLowerCase().includes(searchTerm.toLowerCase()));
+      const isCompleted = it.status === 'Completed';
+      const matchesStatus =
+        statusFilter === 'All'
+          ? true
+          : statusFilter === 'Completed'
+          ? isCompleted
+          : !isCompleted;
+      const matchesType =
+        typeFilter === 'All'
+          ? true
+          : typeFilter === 'meetings'
+          ? itMeeting
+          : !itMeeting;
+      return matchesSearch && matchesStatus && matchesType;
+    })
+    .sort((a, b) => {
+      const pA = priorityOrder[a.priority] || 2;
+      const pB = priorityOrder[b.priority] || 2;
+      if (pA !== pB) return pA - pB;
+      return (a.time || '').localeCompare(b.time || '');
+    });
 
   // Command Palette Built-in Commands
   const builtInCommands = [
@@ -733,7 +756,7 @@ function App() {
 
           <div className="header-right">
             <div className="search-box">
-              <span className="material-symbols-outlined">search</span>
+              <span className="material-symbols-outlined search-icon">search</span>
               <input
                 id="global-search-input"
                 type="text"
@@ -741,14 +764,25 @@ function App() {
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
-              <button
-                type="button"
-                className="palette-open-trigger"
-                onClick={() => setIsPaletteOpen(true)}
-                title="Open Command Palette (Ctrl+K)"
-              >
-                Ctrl+K
-              </button>
+              {searchTerm ? (
+                <button
+                  type="button"
+                  className="search-clear-btn"
+                  onClick={() => setSearchTerm('')}
+                  title="Clear search"
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="palette-open-trigger"
+                  onClick={() => setIsPaletteOpen(true)}
+                  title="Open Command Palette (Ctrl+K)"
+                >
+                  Ctrl+K
+                </button>
+              )}
             </div>
             <button className="btn-blue" onClick={() => handleOpenCreateTask(selectedDate)}>
               <span className="material-symbols-outlined">add</span>
@@ -769,8 +803,8 @@ function App() {
         {/* Workspace Title & Live Status */}
         <div className="workspace-header">
           <div>
-            <h1>Executive Workspace Overview</h1>
-            <p style={{ margin: 0, fontWeight: '600' }}>Manage tasks and schedule meetings with clear priorities</p>
+            <h1 className="workspace-title">Executive Workspace Overview</h1>
+            <p className="workspace-subtitle">Manage tasks and schedule meetings with clear priorities</p>
           </div>
           <div className="workspace-header-badges">
             <button
