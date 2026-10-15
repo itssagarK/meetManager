@@ -3,11 +3,14 @@ import cors from 'cors';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import http from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -163,6 +166,67 @@ if (isProduction) {
   });
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Backend server running on port ${PORT}`);
+// WebSocket Signaling Server for Instant WebRTC Calling
+const wss = new WebSocketServer({ server, path: '/ws' });
+const rooms = new Map(); // roomId -> Set of WebSocket clients
+
+wss.on('connection', (ws) => {
+  let currentRoom = null;
+
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      const { type, roomId, payload } = data;
+
+      if (type === 'join-room') {
+        currentRoom = roomId;
+        if (!rooms.has(roomId)) {
+          rooms.set(roomId, new Set());
+        }
+        const roomClients = rooms.get(roomId);
+        roomClients.add(ws);
+
+        // Notify other peers in this room that a peer has joined
+        roomClients.forEach((client) => {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'peer-joined', roomId }));
+          }
+        });
+      } else if (type === 'signal') {
+        // Relay WebRTC SDP offers, answers, and ICE candidate signals to the other peer(s) in room
+        if (currentRoom && rooms.has(currentRoom)) {
+          rooms.get(currentRoom).forEach((client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({ type: 'signal', payload }));
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.error('WebSocket message parsing error:', err);
+    }
+  });
+
+  ws.on('close', () => {
+    if (currentRoom && rooms.has(currentRoom)) {
+      const roomClients = rooms.get(currentRoom);
+      roomClients.delete(ws);
+      roomClients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ type: 'peer-left' }));
+        }
+      });
+      if (roomClients.size === 0) {
+        rooms.delete(currentRoom);
+      }
+    }
+  });
+
+  ws.on('error', (err) => {
+    console.error('WebSocket connection error:', err);
+  });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Backend server with WebRTC signaling running on port ${PORT}`);
 });

@@ -38,8 +38,11 @@ This outputs the unpacked extension bundle into `client/dist/` containing `manif
 
 ## Key Features
 
-* **Chrome Side Panel Integration**: Docks alongside any tab; remains visible during video calls without losing focus.
+* **Instant PCS Meet Room (Independent WebRTC Video Calling)**: Built-in encrypted peer-to-peer video/audio calling with camera, microphone, screen sharing, and floating dock controls. Generates instant 1-click guest invite links (`?room=...`) that allow participants to join without needing Google Meet, Zoom, or any extension installed.
+* **Chrome Side Panel Integration**: Docks alongside any browser tab; remains active during calls and deep-work sessions without losing focus.
 * **"Up Next" Focus Hero Banner**: Pinned at the top of the workspace with a real-time countdown ticker, attendee preview, and 1-click **Join Call** button.
+* **1-Click Slack & Teams Daily Standup Generator**: One-click formatted standup summary export summarizing completed tasks, scheduled meetings, focus priorities, and blockers.
+* **Focus Sprint Buffer Timer**: 25-minute Pomodoro deep-work buffer countdown timer with native desktop notification on completion.
 * **Active Tab Video Call Detector**: 1-click **Grab Active Tab / Link** button inspects open tabs (`meet.google.com`, `zoom.us`, `teams.microsoft.com`) and auto-captures meeting links and titles.
 * **Pre-Meeting Desktop Notifications**: Background service worker triggers native OS alerts 2 minutes before scheduled calls via `chrome.alarms` and `chrome.notifications`.
 * **Morning Overdue Triage Bar**: Detects incomplete tasks from past dates and offers a 1-click batch rollover to today.

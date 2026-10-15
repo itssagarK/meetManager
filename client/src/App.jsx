@@ -3,6 +3,13 @@ import './App.css';
 
 const API_URL = '/api/meetings';
 
+const RTC_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ],
+};
+
 const initialFormData = {
   title: '',
   date: new Date().toISOString().split('T')[0],
@@ -42,6 +49,23 @@ function App() {
     return false;
   });
   const alertedMeetingsRef = useRef(new Set());
+
+  // WebRTC Video Calling ("Instant PCS Meet Room")
+  const [activeCallRoom, setActiveCallRoom] = useState(null);
+  const [isCallConnected, setIsCallConnected] = useState(false);
+  const [isAudioMuted, setIsAudioMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isCallMinimized, setIsCallMinimized] = useState(false);
+  const [callStatusText, setCallStatusText] = useState('');
+
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const screenStreamRef = useRef(null);
+  const wsSignalingRef = useRef(null);
+  const iceCandidatesQueue = useRef([]);
 
   // Focus Sprint (Pomodoro Buffer Timer)
   const [focusSprintSeconds, setFocusSprintSeconds] = useState(0);
@@ -509,6 +533,341 @@ function App() {
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
+  // WebRTC Video Calling ("Instant PCS Meet Room") Lifecycle
+  const createPeerConnection = (roomId) => {
+    if (peerConnectionRef.current) {
+      try {
+        peerConnectionRef.current.close();
+      } catch (e) {}
+    }
+
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    peerConnectionRef.current = pc;
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, localStreamRef.current);
+      });
+    }
+
+    pc.ontrack = (event) => {
+      if (remoteVideoRef.current && event.streams && event.streams[0]) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+        setIsCallConnected(true);
+        setCallStatusText('Connected with peer');
+      }
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN) {
+        wsSignalingRef.current.send(
+          JSON.stringify({
+            type: 'signal',
+            roomId,
+            payload: { candidate: event.candidate },
+          })
+        );
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+        setIsCallConnected(false);
+        setCallStatusText('Peer disconnected. Waiting for reconnection...');
+      } else if (pc.connectionState === 'connected') {
+        setIsCallConnected(true);
+        setCallStatusText('Connected with peer');
+      }
+    };
+
+    return pc;
+  };
+
+  const handleStartInstantCall = (customRoomId = null) => {
+    const roomId = customRoomId || `pcs-${Math.random().toString(36).substring(2, 9)}`;
+    handleJoinCallRoom(roomId, true);
+  };
+
+  const handleJoinCallRoom = async (roomId, isHost = false) => {
+    try {
+      setActiveCallRoom(roomId);
+      setIsCallConnected(false);
+      setIsCallMinimized(false);
+      setCallStatusText(isHost ? 'Room created! Waiting for guest to join...' : 'Joining room and connecting...');
+
+      // Acquire camera & microphone
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      } catch (mediaErr) {
+        console.warn('Camera/Mic permission failed or denied, trying audio only:', mediaErr);
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (audioErr) {
+          console.warn('Audio only also failed:', audioErr);
+          stream = new MediaStream();
+        }
+      }
+
+      localStreamRef.current = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+
+      // Connect to WebSocket signaling server
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const ws = new WebSocket(wsUrl);
+      wsSignalingRef.current = ws;
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'join-room', roomId }));
+        showToast(`Entered PCS Room: ${roomId}`);
+      };
+
+      ws.onmessage = async (msgEvent) => {
+        try {
+          const data = JSON.parse(msgEvent.data);
+
+          if (data.type === 'peer-joined') {
+            showToast('Guest joined the call. Establishing connection...');
+            setCallStatusText('Peer joined! Connecting WebRTC...');
+            const pc = createPeerConnection(roomId);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            ws.send(
+              JSON.stringify({
+                type: 'signal',
+                roomId,
+                payload: { offer },
+              })
+            );
+          } else if (data.type === 'signal') {
+            const { payload } = data;
+            if (!payload) return;
+
+            if (payload.offer) {
+              const pc = peerConnectionRef.current || createPeerConnection(roomId);
+              await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
+
+              while (iceCandidatesQueue.current.length > 0) {
+                const candidate = iceCandidatesQueue.current.shift();
+                await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.warn);
+              }
+
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              ws.send(
+                JSON.stringify({
+                  type: 'signal',
+                  roomId,
+                  payload: { answer },
+                })
+              );
+              setCallStatusText('Connecting to host...');
+            } else if (payload.answer) {
+              if (peerConnectionRef.current) {
+                await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.answer));
+                setIsCallConnected(true);
+                setCallStatusText('Connected with peer');
+
+                while (iceCandidatesQueue.current.length > 0) {
+                  const candidate = iceCandidatesQueue.current.shift();
+                  await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.warn);
+                }
+              }
+            } else if (payload.candidate) {
+              if (peerConnectionRef.current && peerConnectionRef.current.remoteDescription) {
+                await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(console.warn);
+              } else {
+                iceCandidatesQueue.current.push(payload.candidate);
+              }
+            }
+          } else if (data.type === 'peer-left') {
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = null;
+            }
+            setIsCallConnected(false);
+            setCallStatusText('Guest disconnected from room.');
+            showToast('Guest disconnected');
+          }
+        } catch (err) {
+          console.error('Signaling message handling error:', err);
+        }
+      };
+
+      ws.onerror = (wsErr) => {
+        console.warn('Signaling WebSocket error:', wsErr);
+        setCallStatusText('Signaling server unavailable.');
+      };
+    } catch (err) {
+      console.error('Call initialization failed:', err);
+      showToast('Could not initialize video call');
+    }
+  };
+
+  const handleToggleAudio = () => {
+    if (!localStreamRef.current) return;
+    const audioTracks = localStreamRef.current.getAudioTracks();
+    if (audioTracks.length > 0) {
+      const willBeMuted = !isAudioMuted;
+      audioTracks.forEach((track) => {
+        track.enabled = !willBeMuted;
+      });
+      setIsAudioMuted(willBeMuted);
+      showToast(willBeMuted ? 'Microphone muted' : 'Microphone unmuted');
+    }
+  };
+
+  const handleToggleVideo = () => {
+    if (!localStreamRef.current) return;
+    const videoTracks = localStreamRef.current.getVideoTracks();
+    if (videoTracks.length > 0) {
+      const willBeOff = !isVideoOff;
+      videoTracks.forEach((track) => {
+        track.enabled = !willBeOff;
+      });
+      setIsVideoOff(willBeOff);
+      showToast(willBeOff ? 'Camera turned off' : 'Camera turned on');
+    }
+  };
+
+  const stopScreenShare = () => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
+    }
+
+    if (localStreamRef.current) {
+      const cameraTrack = localStreamRef.current.getVideoTracks()[0];
+      if (peerConnectionRef.current && cameraTrack) {
+        const sender = peerConnectionRef.current.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (sender) {
+          sender.replaceTrack(cameraTrack);
+        }
+      }
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+    }
+
+    setIsScreenSharing(false);
+    showToast('Screen sharing stopped');
+  };
+
+  const handleToggleScreenShare = async () => {
+    if (!isScreenSharing) {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        screenStreamRef.current = screenStream;
+        const screenTrack = screenStream.getVideoTracks()[0];
+
+        if (peerConnectionRef.current) {
+          const sender = peerConnectionRef.current.getSenders().find((s) => s.track && s.track.kind === 'video');
+          if (sender) {
+            sender.replaceTrack(screenTrack);
+          }
+        }
+
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = screenStream;
+        }
+
+        screenTrack.onended = () => {
+          stopScreenShare();
+        };
+
+        setIsScreenSharing(true);
+        showToast('Screen sharing started');
+      } catch (err) {
+        console.warn('Screen share canceled or failed:', err);
+      }
+    } else {
+      stopScreenShare();
+    }
+  };
+
+  const handleEndCall = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
+    }
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+    if (wsSignalingRef.current) {
+      wsSignalingRef.current.close();
+      wsSignalingRef.current = null;
+    }
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+
+    iceCandidatesQueue.current = [];
+    setActiveCallRoom(null);
+    setIsCallConnected(false);
+    setIsAudioMuted(false);
+    setIsVideoOff(false);
+    setIsScreenSharing(false);
+    setIsCallMinimized(false);
+    setCallStatusText('');
+
+    if (window.location.search.includes('room=')) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    showToast('PCS Meet Call ended');
+  };
+
+  const handleCopyGuestLink = () => {
+    if (!activeCallRoom) return;
+    const origin = window.location.origin;
+    const guestUrl = `${origin}?room=${activeCallRoom}`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(guestUrl);
+      showToast('Guest invite link copied to clipboard');
+    } else {
+      prompt('Copy guest call link:', guestUrl);
+    }
+  };
+
+  // Sync local stream with local video element when room or minimized state changes
+  useEffect(() => {
+    if (localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+    }
+  }, [activeCallRoom, isCallMinimized]);
+
+  // Auto-detect ?room= URL parameter for incoming guest joins
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomParam = urlParams.get('room');
+    if (roomParam && !activeCallRoom) {
+      handleJoinCallRoom(roomParam, false);
+    }
+  }, []);
+
+  // Cleanup WebRTC resources on unmount
+  useEffect(() => {
+    return () => {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+      }
+      if (wsSignalingRef.current) {
+        wsSignalingRef.current.close();
+      }
+    };
+  }, []);
+
   // 1-Click Daily Standup Generator (Formatted for Slack/Teams)
   const handleCopyDailyStandup = () => {
     const yDate = new Date();
@@ -780,6 +1139,7 @@ function App() {
     { id: 'cmd-anl', title: 'Switch to Analytics View', icon: 'analytics', action: () => { setViewMode('analytics'); setIsPaletteOpen(false); } },
     { id: 'cmd-standup', title: 'Copy Daily Standup (Slack/Teams)', icon: 'content_paste', action: () => { handleCopyDailyStandup(); setIsPaletteOpen(false); } },
     { id: 'cmd-sprint', title: isSprintActive ? 'Stop Focus Sprint' : 'Start Focus Sprint (25m)', icon: 'timer', action: () => { if (isSprintActive) handleStopFocusSprint(); else handleStartFocusSprint(25); setIsPaletteOpen(false); } },
+    { id: 'cmd-call', title: 'Start Instant PCS Meet Call (WebRTC)', icon: 'videocam', action: () => { handleStartInstantCall(); setIsPaletteOpen(false); } },
   ];
 
   const filteredCommands = builtInCommands.filter((c) =>
@@ -873,6 +1233,15 @@ function App() {
                 </button>
               )}
             </div>
+            <button
+              type="button"
+              className="btn-pcs-call"
+              onClick={() => handleStartInstantCall()}
+              title="Start Instant WebRTC Video Meeting"
+            >
+              <span className="material-symbols-outlined">videocam</span>
+              <span>Instant Call</span>
+            </button>
             <button className="btn-blue" onClick={() => handleOpenCreateTask(selectedDate)}>
               <span className="material-symbols-outlined">add</span>
               <span>+ New Task</span>
@@ -1870,6 +2239,145 @@ function App() {
               <span>PCS Meet Manager Command Center</span>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Floating WebRTC Video Call Dock Panel */}
+      {activeCallRoom && (
+        <div className={`call-dock-panel ${isCallMinimized ? 'minimized' : ''}`}>
+          <div className="call-dock-header">
+            <div className="call-dock-title">
+              <span className="live-call-indicator"></span>
+              <span className="room-label">Room: <strong>{activeCallRoom}</strong></span>
+            </div>
+            <div className="call-dock-actions">
+              <button
+                type="button"
+                className="call-dock-btn"
+                onClick={handleCopyGuestLink}
+                title="Copy guest invite link"
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>content_copy</span>
+                <span>Copy Link</span>
+              </button>
+              <button
+                type="button"
+                className="call-dock-btn"
+                onClick={() => setIsCallMinimized(!isCallMinimized)}
+                title={isCallMinimized ? 'Maximize Call Window' : 'Minimize Call Window'}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
+                  {isCallMinimized ? 'expand_less' : 'expand_more'}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="call-dock-btn close-call-btn"
+                onClick={handleEndCall}
+                title="End Video Call"
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
+              </button>
+            </div>
+          </div>
+
+          {!isCallMinimized && (
+            <div className="call-dock-body">
+              <div className="call-video-grid">
+                {/* Remote Participant Video Card */}
+                <div className="video-card remote-video-card">
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    className="video-stream remote-stream"
+                  />
+                  {!isCallConnected && (
+                    <div className="video-waiting-overlay">
+                      <span className="material-symbols-outlined waiting-icon">hourglass_top</span>
+                      <div className="waiting-title">Waiting for peer...</div>
+                      <div className="waiting-subtitle">{callStatusText}</div>
+                      <button
+                        type="button"
+                        className="btn-copy-invite"
+                        onClick={handleCopyGuestLink}
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>link</span>
+                        <span>Copy Guest Link</span>
+                      </button>
+                    </div>
+                  )}
+                  <div className="video-participant-badge">Remote Guest</div>
+                </div>
+
+                {/* Local Self Video Card */}
+                <div className="video-card local-video-card">
+                  <video
+                    ref={localVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="video-stream local-stream"
+                  />
+                  {isVideoOff && (
+                    <div className="video-off-overlay">
+                      <span className="material-symbols-outlined">videocam_off</span>
+                      <span>Camera Off</span>
+                    </div>
+                  )}
+                  <div className="video-participant-badge">
+                    You {isAudioMuted ? '(Muted)' : ''}
+                  </div>
+                </div>
+              </div>
+
+              {/* Call Controls Bar */}
+              <div className="call-dock-controls">
+                <button
+                  type="button"
+                  className={`call-ctl-btn ${isAudioMuted ? 'active-mute' : ''}`}
+                  onClick={handleToggleAudio}
+                  title={isAudioMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+                >
+                  <span className="material-symbols-outlined">
+                    {isAudioMuted ? 'mic_off' : 'mic'}
+                  </span>
+                  <span>{isAudioMuted ? 'Unmute' : 'Mute'}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`call-ctl-btn ${isVideoOff ? 'active-mute' : ''}`}
+                  onClick={handleToggleVideo}
+                  title={isVideoOff ? 'Turn Camera On' : 'Turn Camera Off'}
+                >
+                  <span className="material-symbols-outlined">
+                    {isVideoOff ? 'videocam_off' : 'videocam'}
+                  </span>
+                  <span>{isVideoOff ? 'Start Video' : 'Stop Video'}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`call-ctl-btn ${isScreenSharing ? 'active-share' : ''}`}
+                  onClick={handleToggleScreenShare}
+                  title={isScreenSharing ? 'Stop Screen Sharing' : 'Share Screen'}
+                >
+                  <span className="material-symbols-outlined">
+                    {isScreenSharing ? 'stop_screen_share' : 'screen_share'}
+                  </span>
+                  <span>{isScreenSharing ? 'Stop Share' : 'Share Screen'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="call-ctl-btn end-call-btn"
+                  onClick={handleEndCall}
+                  title="Leave Call"
+                >
+                  <span className="material-symbols-outlined">call_end</span>
+                  <span>End</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
