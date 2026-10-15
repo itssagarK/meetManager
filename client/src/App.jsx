@@ -43,6 +43,32 @@ function App() {
   });
   const alertedMeetingsRef = useRef(new Set());
 
+  // Focus Sprint (Pomodoro Buffer Timer)
+  const [focusSprintSeconds, setFocusSprintSeconds] = useState(0);
+  const [isSprintActive, setIsSprintActive] = useState(false);
+
+  useEffect(() => {
+    if (!isSprintActive || focusSprintSeconds <= 0) return;
+    const timer = setInterval(() => {
+      setFocusSprintSeconds((prev) => {
+        if (prev <= 1) {
+          setIsSprintActive(false);
+          clearInterval(timer);
+          showToast('Focus Sprint Completed! Take a quick break.');
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            new Notification('Focus Sprint Finished', {
+              body: '25-minute deep-work sprint completed! Ready for your next call.',
+              icon: '/favicon.svg',
+            });
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isSprintActive, focusSprintSeconds]);
+
   useEffect(() => {
     const ticker = setInterval(() => setCurrentTime(new Date()), 30000);
     return () => clearInterval(ticker);
@@ -464,6 +490,67 @@ function App() {
     }
   };
 
+  // Focus Sprint Helpers
+  const handleStartFocusSprint = (minutes = 25) => {
+    setFocusSprintSeconds(minutes * 60);
+    setIsSprintActive(true);
+    showToast(`Started ${minutes}-minute Focus Sprint`);
+  };
+
+  const handleStopFocusSprint = () => {
+    setIsSprintActive(false);
+    setFocusSprintSeconds(0);
+    showToast('Focus Sprint stopped');
+  };
+
+  const formatSprintTimer = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
+
+  // 1-Click Daily Standup Generator (Formatted for Slack/Teams)
+  const handleCopyDailyStandup = () => {
+    const yDate = new Date();
+    yDate.setDate(yDate.getDate() - 1);
+    const yesterdayStr = yDate.toISOString().split('T')[0];
+
+    const yesterdayDone = items.filter(
+      (it) => it.date === yesterdayStr && it.status === 'Completed'
+    );
+    const todayItems = items.filter((it) => it.date === todayStr);
+    const todayPendingTasks = todayItems.filter((it) => !isMeeting(it) && it.status !== 'Completed');
+    const todayMeetingsList = todayItems.filter(isMeeting);
+
+    const lines = [
+      `DAILY STANDUP - ${todayStr}`,
+      '',
+      'YESTERDAY:',
+      yesterdayDone.length > 0
+        ? yesterdayDone.map((t) => `- Completed: ${t.title}`).join('\n')
+        : '- Wrapped up scheduled tasks',
+      '',
+      'TODAY:',
+      todayMeetingsList.length > 0
+        ? todayMeetingsList.map((m) => `- ${m.time}: ${m.title} (Meeting)`).join('\n')
+        : '- No external meetings scheduled',
+      todayPendingTasks.length > 0
+        ? todayPendingTasks.map((t) => `- Focus: ${t.title} [${t.priority} Priority]`).join('\n')
+        : '- Task queue clear',
+      '',
+      'BLOCKERS:',
+      '- None',
+    ];
+
+    const text = lines.join('\n');
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      showToast('Daily standup copied to clipboard');
+    } else {
+      prompt('Copy your standup:', text);
+    }
+  };
+
   // Overdue Task Rollover Logic (0ms Optimistic UI)
   const overdueTasks = items.filter(
     (item) => !isMeeting(item) && item.status !== 'Completed' && item.date < todayStr
@@ -691,6 +778,8 @@ function App() {
     { id: 'cmd-tbl', title: 'Switch to Table View', icon: 'table_rows', action: () => { setViewMode('table'); setIsPaletteOpen(false); } },
     { id: 'cmd-crd', title: 'Switch to Cards View', icon: 'view_kanban', action: () => { setViewMode('cards'); setIsPaletteOpen(false); } },
     { id: 'cmd-anl', title: 'Switch to Analytics View', icon: 'analytics', action: () => { setViewMode('analytics'); setIsPaletteOpen(false); } },
+    { id: 'cmd-standup', title: 'Copy Daily Standup (Slack/Teams)', icon: 'content_paste', action: () => { handleCopyDailyStandup(); setIsPaletteOpen(false); } },
+    { id: 'cmd-sprint', title: isSprintActive ? 'Stop Focus Sprint' : 'Start Focus Sprint (25m)', icon: 'timer', action: () => { if (isSprintActive) handleStopFocusSprint(); else handleStartFocusSprint(25); setIsPaletteOpen(false); } },
   ];
 
   const filteredCommands = builtInCommands.filter((c) =>
@@ -809,6 +898,15 @@ function App() {
           <div className="workspace-header-badges">
             <button
               type="button"
+              className="standup-btn-pill"
+              onClick={handleCopyDailyStandup}
+              title="Copy formatted daily standup update for Slack/Teams"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>content_paste</span>
+              <span>Copy Standup</span>
+            </button>
+            <button
+              type="button"
               className={`alert-toggle-pill ${notificationsEnabled ? 'active' : ''}`}
               onClick={handleRequestNotificationPermission}
               title={notificationsEnabled ? 'Desktop alerts enabled (2-min warning)' : 'Click to enable desktop meeting notifications'}
@@ -897,12 +995,58 @@ function App() {
                     Notes → Tasks
                   </button>
                 )}
+                {isSprintActive ? (
+                  <button
+                    type="button"
+                    className="up-next-sprint-btn active"
+                    onClick={handleStopFocusSprint}
+                    title="Stop active focus sprint"
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>timer</span>
+                    <span>Sprint: {formatSprintTimer(focusSprintSeconds)} (Stop)</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="up-next-sprint-btn"
+                    onClick={() => handleStartFocusSprint(25)}
+                    title="Start 25-minute deep-work focus sprint"
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>timer</span>
+                    <span>Focus Sprint (25m)</span>
+                  </button>
+                )}
               </div>
             </div>
           ) : (
             <div className="up-next-empty">
-              <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
-              <span>Schedule Clear: All meetings concluded for today</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
+                <span>Schedule Clear: All meetings concluded for today</span>
+              </div>
+              <div>
+                {isSprintActive ? (
+                  <button
+                    type="button"
+                    className="up-next-sprint-btn active"
+                    onClick={handleStopFocusSprint}
+                    title="Stop active focus sprint"
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>timer</span>
+                    <span>Sprint: {formatSprintTimer(focusSprintSeconds)} (Stop)</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="up-next-sprint-btn"
+                    onClick={() => handleStartFocusSprint(25)}
+                    title="Start 25-minute deep-work focus sprint"
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>timer</span>
+                    <span>Focus Sprint (25m)</span>
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
