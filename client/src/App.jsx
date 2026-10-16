@@ -24,8 +24,18 @@ const initialFormData = {
 const priorityOrder = { High: 1, Medium: 2, Low: 3 };
 
 function App() {
+  // Multi-Tenant Workspace State
+  const [workspaceId, setWorkspaceId] = useState(() => {
+    const saved = localStorage.getItem('mm_workspace_id');
+    if (saved) return saved;
+    const newId = `ws-${Math.random().toString(36).substring(2, 8)}`;
+    localStorage.setItem('mm_workspace_id', newId);
+    return newId;
+  });
+
   const [items, setItems] = useState(() => {
-    const cached = localStorage.getItem('mm_cached_items');
+    const savedWs = localStorage.getItem('mm_workspace_id');
+    const cached = savedWs ? localStorage.getItem(`mm_cached_items_${savedWs}`) : localStorage.getItem('mm_cached_items');
     return cached ? JSON.parse(cached) : [];
   });
   const [loading, setLoading] = useState(true);
@@ -58,6 +68,8 @@ function App() {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isCallMinimized, setIsCallMinimized] = useState(false);
   const [callStatusText, setCallStatusText] = useState('');
+  const [iceServersList, setIceServersList] = useState(RTC_CONFIG.iceServers);
+  const [callQuality, setCallQuality] = useState('connecting'); // 'connecting' | 'stable' | 'relayed' | 'reconnecting' | 'failed'
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -66,6 +78,7 @@ function App() {
   const screenStreamRef = useRef(null);
   const wsSignalingRef = useRef(null);
   const iceCandidatesQueue = useRef([]);
+  const statsIntervalRef = useRef(null);
 
   // Focus Sprint (Pomodoro Buffer Timer)
   const [focusSprintSeconds, setFocusSprintSeconds] = useState(0);
@@ -109,16 +122,29 @@ function App() {
     setTimeout(() => setToastMessage(''), 3000);
   };
 
-  const fetchItems = async () => {
+  // Scoped API Fetch Helper ensuring workspace isolation
+  const apiFetch = (url, options = {}) => {
+    const headers = {
+      ...(options.headers || {}),
+      'X-Workspace-Id': workspaceId,
+    };
+    return fetch(url, { ...options, headers });
+  };
+
+  const fetchItems = async (wsId = workspaceId) => {
     try {
-      const res = await fetch(API_URL);
+      const res = await apiFetch(API_URL, { headers: { 'X-Workspace-Id': wsId } });
       if (!res.ok) throw new Error('API request failed');
       const data = await res.json();
       setItems(data);
-      localStorage.setItem('mm_cached_items', JSON.stringify(data));
+      localStorage.setItem(`mm_cached_items_${wsId}`, JSON.stringify(data));
       setServerOnline(true);
     } catch (err) {
       console.warn('Backend unavailable, using local cache:', err);
+      const cached = localStorage.getItem(`mm_cached_items_${wsId}`);
+      if (cached) {
+        setItems(JSON.parse(cached));
+      }
       setServerOnline(false);
     } finally {
       setLoading(false);
@@ -126,8 +152,24 @@ function App() {
   };
 
   useEffect(() => {
-    fetchItems();
-  }, []);
+    fetchItems(workspaceId);
+  }, [workspaceId]);
+
+  const handleSwitchWorkspace = () => {
+    const entered = prompt(
+      `Your current workspace ID is: ${workspaceId}\n\nEnter a Workspace ID to join, or click OK to copy current:`,
+      workspaceId
+    );
+    if (entered && entered.trim() && entered.trim().toLowerCase() !== workspaceId) {
+      const cleanId = entered.trim().toLowerCase();
+      localStorage.setItem('mm_workspace_id', cleanId);
+      setWorkspaceId(cleanId);
+      showToast(`Switched to workspace: ${cleanId}`);
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(workspaceId);
+      showToast('Workspace ID copied to clipboard');
+    }
+  };
 
   const isMeeting = (item) => Boolean(item.type === 'meeting' || item.link || (item.attendees && item.attendees.trim() !== ''));
 
@@ -291,12 +333,12 @@ function App() {
     if (editingId) {
       const updated = items.map((it) => (it.id === editingId ? { ...payload, id: editingId } : it));
       setItems(updated);
-      localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+      localStorage.setItem(`mm_cached_items_${workspaceId}`, JSON.stringify(updated));
     } else {
       const newLocalItem = { ...payload, id: Date.now() };
       const updated = [...items, newLocalItem];
       setItems(updated);
-      localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+      localStorage.setItem(`mm_cached_items_${workspaceId}`, JSON.stringify(updated));
     }
 
     handleCloseDrawer();
@@ -307,14 +349,14 @@ function App() {
       const url = editingId ? `${API_URL}/${editingId}` : API_URL;
       const method = editingId ? 'PUT' : 'POST';
 
-      let res = await fetch(url, {
+      let res = await apiFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
       if (!res.ok && editingId && res.status === 404) {
-        res = await fetch(API_URL, {
+        res = await apiFetch(API_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -333,11 +375,11 @@ function App() {
     if (!window.confirm('Delete this item?')) return;
     const updated = items.filter((it) => it.id !== id);
     setItems(updated);
-    localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+    localStorage.setItem(`mm_cached_items_${workspaceId}`, JSON.stringify(updated));
     showToast('Item deleted');
 
     try {
-      await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+      await apiFetch(`${API_URL}/${id}`, { method: 'DELETE' });
     } catch (err) {
       console.warn('Backend delete sync deferred:', err);
     }
@@ -347,11 +389,11 @@ function App() {
     const nextStatus = item.status === 'Completed' ? 'Pending' : 'Completed';
     const updated = items.map((it) => (it.id === item.id ? { ...it, status: nextStatus } : it));
     setItems(updated);
-    localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+    localStorage.setItem(`mm_cached_items_${workspaceId}`, JSON.stringify(updated));
     showToast(nextStatus === 'Completed' ? 'Marked complete' : 'Marked pending');
 
     try {
-      await fetch(`${API_URL}/${item.id}`, {
+      await apiFetch(`${API_URL}/${item.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...item, status: nextStatus }),
@@ -369,11 +411,11 @@ function App() {
 
     const updated = items.map((it) => (it.id === item.id ? updatedPayload : it));
     setItems(updated);
-    localStorage.setItem('mm_cached_items', JSON.stringify(updated));
+    localStorage.setItem(`mm_cached_items_${workspaceId}`, JSON.stringify(updated));
     showToast(`Moved "${item.title}" to tomorrow (${tomorrowStr})`);
 
     try {
-      await fetch(`${API_URL}/${item.id}`, {
+      await apiFetch(`${API_URL}/${item.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedPayload),
@@ -541,8 +583,9 @@ function App() {
       } catch (e) {}
     }
 
-    const pc = new RTCPeerConnection(RTC_CONFIG);
+    const pc = new RTCPeerConnection({ iceServers: iceServersList });
     peerConnectionRef.current = pc;
+    setCallQuality('connecting');
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
@@ -570,15 +613,58 @@ function App() {
       }
     };
 
+    // Automatic ICE Restart and Connection Health Detection
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      if (state === 'connected' || state === 'completed') {
+        setCallQuality('stable');
+        setIsCallConnected(true);
+        setCallStatusText('Connected with peer');
+      } else if (state === 'disconnected') {
+        setCallQuality('reconnecting');
+        setCallStatusText('Network fluctuation. Reconnecting...');
+      } else if (state === 'failed') {
+        setCallQuality('reconnecting');
+        setCallStatusText('Connection interrupted. Attempting ICE restart...');
+        if (typeof pc.restartIce === 'function') {
+          pc.restartIce();
+        }
+      } else if (state === 'closed') {
+        setCallQuality('failed');
+        setIsCallConnected(false);
+      }
+    };
+
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
         setIsCallConnected(false);
+        setCallQuality('reconnecting');
         setCallStatusText('Peer disconnected. Waiting for reconnection...');
       } else if (pc.connectionState === 'connected') {
         setIsCallConnected(true);
+        setCallQuality('stable');
         setCallStatusText('Connected with peer');
       }
     };
+
+    // Monitor WebRTC stream stats every 3 seconds for relay/direct health
+    if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
+    statsIntervalRef.current = setInterval(async () => {
+      if (!pc || pc.connectionState !== 'connected') return;
+      try {
+        const stats = await pc.getStats();
+        stats.forEach((report) => {
+          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+            const localCandidate = stats.get(report.localCandidateId);
+            if (localCandidate && localCandidate.candidateType === 'relay') {
+              setCallQuality('relayed');
+            } else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+              setCallQuality('stable');
+            }
+          }
+        });
+      } catch (e) {}
+    }, 3000);
 
     return pc;
   };
@@ -796,6 +882,10 @@ function App() {
       screenStreamRef.current.getTracks().forEach((track) => track.stop());
       screenStreamRef.current = null;
     }
+    if (statsIntervalRef.current) {
+      clearInterval(statsIntervalRef.current);
+      statsIntervalRef.current = null;
+    }
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
@@ -810,6 +900,7 @@ function App() {
     iceCandidatesQueue.current = [];
     setActiveCallRoom(null);
     setIsCallConnected(false);
+    setCallQuality('connecting');
     setIsAudioMuted(false);
     setIsVideoOff(false);
     setIsScreenSharing(false);
@@ -841,6 +932,18 @@ function App() {
     }
   }, [activeCallRoom, isCallMinimized]);
 
+  // Fetch production ICE configuration (STUN + TURN relay) from backend
+  useEffect(() => {
+    fetch('/api/webrtc/ice-config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.iceServers && data.iceServers.length > 0) {
+          setIceServersList(data.iceServers);
+        }
+      })
+      .catch((err) => console.warn('Using default STUN servers:', err));
+  }, []);
+
   // Auto-detect ?room= URL parameter for incoming guest joins
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -853,6 +956,10 @@ function App() {
   // Cleanup WebRTC resources on unmount
   useEffect(() => {
     return () => {
+      if (statsIntervalRef.current) {
+        clearInterval(statsIntervalRef.current);
+        statsIntervalRef.current = null;
+      }
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
       }
@@ -922,13 +1029,13 @@ function App() {
       overdueIds.has(t.id) ? { ...t, date: todayStr } : t
     );
     setItems(updatedItems);
-    localStorage.setItem('mm_cached_items', JSON.stringify(updatedItems));
+    localStorage.setItem(`mm_cached_items_${workspaceId}`, JSON.stringify(updatedItems));
     showToast(`Moved ${overdueTasks.length} overdue task${overdueTasks.length > 1 ? 's' : ''} to today`);
 
     try {
       await Promise.all(
         overdueTasks.map((t) =>
-          fetch(`${API_URL}/${t.id}`, {
+          apiFetch(`${API_URL}/${t.id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...t, date: todayStr }),
@@ -1015,14 +1122,14 @@ function App() {
     // Optimistic UI update (0ms lag)
     const updatedItems = [...items, ...newTasks];
     setItems(updatedItems);
-    localStorage.setItem('mm_cached_items', JSON.stringify(updatedItems));
+    localStorage.setItem(`mm_cached_items_${workspaceId}`, JSON.stringify(updatedItems));
     showToast(`Created ${newTasks.length} task${newTasks.length > 1 ? 's' : ''} for tomorrow from notes`);
 
     // Background sync to SQLite
     try {
       await Promise.all(
         newTasks.map((t) =>
-          fetch(API_URL, {
+          apiFetch(API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(t),
@@ -1140,6 +1247,7 @@ function App() {
     { id: 'cmd-standup', title: 'Copy Daily Standup (Slack/Teams)', icon: 'content_paste', action: () => { handleCopyDailyStandup(); setIsPaletteOpen(false); } },
     { id: 'cmd-sprint', title: isSprintActive ? 'Stop Focus Sprint' : 'Start Focus Sprint (25m)', icon: 'timer', action: () => { if (isSprintActive) handleStopFocusSprint(); else handleStartFocusSprint(25); setIsPaletteOpen(false); } },
     { id: 'cmd-call', title: 'Start Instant PCS Meet Call (WebRTC)', icon: 'videocam', action: () => { handleStartInstantCall(); setIsPaletteOpen(false); } },
+    { id: 'cmd-workspace', title: 'Switch / Share Workspace ID', icon: 'folder_shared', action: () => { handleSwitchWorkspace(); setIsPaletteOpen(false); } },
   ];
 
   const filteredCommands = builtInCommands.filter((c) =>
@@ -1284,6 +1392,15 @@ function App() {
                 {notificationsEnabled ? 'notifications_active' : 'notifications_none'}
               </span>
               <span>{notificationsEnabled ? 'Alerts Active (2m)' : 'Enable Alerts'}</span>
+            </button>
+            <button
+              type="button"
+              className="workspace-pill"
+              onClick={handleSwitchWorkspace}
+              title="Click to copy your private workspace key or switch workspaces"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>folder_shared</span>
+              <span>{workspaceId}</span>
             </button>
             <div className="live-sync-pill">
               <span className="pulse-dot"></span>
@@ -2249,6 +2366,16 @@ function App() {
             <div className="call-dock-title">
               <span className="live-call-indicator"></span>
               <span className="room-label">Room: <strong>{activeCallRoom}</strong></span>
+              <span className={`call-quality-pill ${callQuality}`} title={`WebRTC Status: ${callQuality}`}>
+                <span className="quality-dot"></span>
+                <span className="quality-text">
+                  {callQuality === 'stable' && 'P2P Direct'}
+                  {callQuality === 'relayed' && 'TURN Relay'}
+                  {callQuality === 'reconnecting' && 'Reconnecting'}
+                  {callQuality === 'connecting' && 'Connecting'}
+                  {callQuality === 'failed' && 'Offline'}
+                </span>
+              </span>
             </div>
             <div className="call-dock-actions">
               <button

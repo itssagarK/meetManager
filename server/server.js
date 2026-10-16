@@ -2,9 +2,12 @@ import express from 'express';
 import cors from 'cors';
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,11 +17,66 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 const isProduction = process.env.NODE_ENV === 'production';
 
+// Trust reverse proxy (Render, Cloudflare, Nginx, Docker)
+app.set('trust proxy', 1);
+
+// Enterprise HTTP security headers with relaxed CSP for WebRTC & Google Fonts
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+        connectSrc: ["'self'", 'ws:', 'wss:', 'https://*.google.com'],
+        mediaSrc: ["'self'", 'blob:'],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
+
 app.use(cors());
 app.use(express.json());
 
-const dbPath = path.join(__dirname, 'meetings.db');
+// Rate Limiting: 200 requests per 15 minutes per IP for general API
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests from this IP, please try again in 15 minutes.' },
+});
+
+// Stricter rate limit for write operations: 80 requests per 5 minutes
+const writeLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 80,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many updates, please slow down.' },
+});
+
+app.use('/api/', apiLimiter);
+app.use('/api/meetings', (req, res, next) => {
+  if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
+    return writeLimiter(req, res, next);
+  }
+  next();
+});
+
+// Configurable database path for cloud persistent disks (e.g. Render /data/meetings.db)
+const dbPath = process.env.DATABASE_PATH || path.join(__dirname, 'meetings.db');
+const dbDir = path.dirname(dbPath);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
 const db = new Database(dbPath);
+// High-concurrency Write-Ahead Logging (WAL)
+db.pragma('journal_mode = WAL');
 
 // Initialize schema
 db.exec(`
@@ -33,6 +91,7 @@ db.exec(`
     priority TEXT DEFAULT 'Medium',
     status TEXT DEFAULT 'Pending',
     type TEXT DEFAULT 'task',
+    workspace_id TEXT DEFAULT 'default',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
@@ -43,6 +102,10 @@ try {
 
 try {
   db.exec("ALTER TABLE meetings ADD COLUMN type TEXT DEFAULT 'task'");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE meetings ADD COLUMN workspace_id TEXT DEFAULT 'default'");
 } catch (e) {}
 
 // Clean up any Saturday Townhall meetings scheduled on non-Saturdays
@@ -61,10 +124,38 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', database: 'connected' });
 });
 
+// WebRTC ICE Server Configuration Endpoint (STUN + optional TURN Relay)
+app.get('/api/webrtc/ice-config', (req, res) => {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+  ];
+
+  // If production environment variables for a TURN server are provided
+  if (process.env.TURN_URL) {
+    iceServers.push({
+      urls: process.env.TURN_URL,
+      username: process.env.TURN_USERNAME || '',
+      credential: process.env.TURN_CREDENTIAL || '',
+    });
+  }
+
+  res.json({ iceServers });
+});
+
+// Workspace extraction helper for multi-tenancy
+const getWorkspaceId = (req) => {
+  const ws = req.headers['x-workspace-id'];
+  return (typeof ws === 'string' && ws.trim() !== '') ? ws.trim().toLowerCase() : 'default';
+};
+
 // Routes
 app.get('/api/meetings', (req, res) => {
   try {
-    const items = db.prepare('SELECT * FROM meetings ORDER BY date ASC, time ASC').all();
+    const workspaceId = getWorkspaceId(req);
+    const items = db.prepare('SELECT * FROM meetings WHERE workspace_id = ? ORDER BY date ASC, time ASC').all(workspaceId);
     res.json(items);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -73,6 +164,7 @@ app.get('/api/meetings', (req, res) => {
 
 app.post('/api/meetings', (req, res) => {
   try {
+    const workspaceId = getWorkspaceId(req);
     const { title, date, time, link, attendees, notes, priority, status, type } = req.body;
     if (!title || !date || !time) {
       return res.status(400).json({ error: 'Title, date, and time are required fields.' });
@@ -81,40 +173,8 @@ app.post('/api/meetings', (req, res) => {
     const itemType = type || (link || (attendees && attendees.trim() !== '') ? 'meeting' : 'task');
 
     const stmt = db.prepare(`
-      INSERT INTO meetings (title, date, time, link, attendees, notes, priority, status, type)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const result = stmt.run(
-      title,
-      date,
-      time,
-      link || '',
-      attendees || '',
-      notes || '',
-      priority || 'Medium',
-      status || 'Pending',
-      itemType
-    );
-
-    const newItem = db.prepare('SELECT * FROM meetings WHERE id = ?').get(result.lastInsertRowid);
-    res.status(201).json(newItem);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.put('/api/meetings/:id', (req, res) => {
-  try {
-    const { id } = req.params;
-    const { title, date, time, link, attendees, notes, priority, status, type } = req.body;
-
-    const itemType = type || (link || (attendees && attendees.trim() !== '') ? 'meeting' : 'task');
-
-    const stmt = db.prepare(`
-      UPDATE meetings
-      SET title = ?, date = ?, time = ?, link = ?, attendees = ?, notes = ?, priority = ?, status = ?, type = ?
-      WHERE id = ?
+      INSERT INTO meetings (title, date, time, link, attendees, notes, priority, status, type, workspace_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -127,11 +187,46 @@ app.put('/api/meetings/:id', (req, res) => {
       priority || 'Medium',
       status || 'Pending',
       itemType,
-      id
+      workspaceId
+    );
+
+    const newItem = db.prepare('SELECT * FROM meetings WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(newItem);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/meetings/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const workspaceId = getWorkspaceId(req);
+    const { title, date, time, link, attendees, notes, priority, status, type } = req.body;
+
+    const itemType = type || (link || (attendees && attendees.trim() !== '') ? 'meeting' : 'task');
+
+    const stmt = db.prepare(`
+      UPDATE meetings
+      SET title = ?, date = ?, time = ?, link = ?, attendees = ?, notes = ?, priority = ?, status = ?, type = ?
+      WHERE id = ? AND workspace_id = ?
+    `);
+
+    const result = stmt.run(
+      title,
+      date,
+      time,
+      link || '',
+      attendees || '',
+      notes || '',
+      priority || 'Medium',
+      status || 'Pending',
+      itemType,
+      id,
+      workspaceId
     );
 
     if (result.changes === 0) {
-      return res.status(404).json({ error: 'Item not found' });
+      return res.status(404).json({ error: 'Item not found in this workspace' });
     }
 
     const updated = db.prepare('SELECT * FROM meetings WHERE id = ?').get(id);
@@ -144,11 +239,12 @@ app.put('/api/meetings/:id', (req, res) => {
 app.delete('/api/meetings/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const stmt = db.prepare('DELETE FROM meetings WHERE id = ?');
-    const result = stmt.run(id);
+    const workspaceId = getWorkspaceId(req);
+    const stmt = db.prepare('DELETE FROM meetings WHERE id = ? AND workspace_id = ?');
+    const result = stmt.run(id, workspaceId);
 
     if (result.changes === 0) {
-      return res.status(404).json({ error: 'Item not found' });
+      return res.status(404).json({ error: 'Item not found in this workspace' });
     }
 
     res.json({ message: 'Deleted successfully', id: Number(id) });
@@ -230,3 +326,39 @@ wss.on('connection', (ws) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Backend server with WebRTC signaling running on port ${PORT}`);
 });
+
+// Graceful shutdown handling (SIGTERM / SIGINT)
+const gracefulShutdown = (signal) => {
+  console.log(`Received ${signal}. Initiating graceful shutdown...`);
+
+  // 1. Notify and close active WebSockets
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.close(1001, 'Server restarting or shutting down');
+    }
+  });
+
+  // 2. Stop accepting new HTTP requests
+  server.close(() => {
+    console.log('HTTP and WebSocket server closed.');
+
+    // 3. Close SQLite database connection cleanly
+    try {
+      db.close();
+      console.log('SQLite database connection closed cleanly.');
+    } catch (dbErr) {
+      console.error('Error closing SQLite database:', dbErr);
+    }
+
+    process.exit(0);
+  });
+
+  // Force exit if shutdown hangs after 5 seconds
+  setTimeout(() => {
+    console.error('Graceful shutdown timed out. Forcing process exit.');
+    process.exit(1);
+  }, 5000);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

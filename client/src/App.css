@@ -279,6 +279,24 @@ body {
   color: var(--color-green);
   border-color: var(--border-black);
 }
+.workspace-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--color-white);
+  border: 1.5px solid var(--border-black);
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.workspace-pill:hover {
+  background: #f1f5f9;
+  transform: translateY(-1px);
+}
 .live-sync-pill {
   display: inline-flex;
   align-items: center;
@@ -1484,7 +1502,45 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 170px;
+  max-width: 140px;
+}
+
+/* WebRTC Connection Health & Quality Pill */
+.call-quality-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #000000;
+  font-size: 10px;
+  font-weight: 800;
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.quality-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.call-quality-pill.stable .quality-dot {
+  background: #16a34a; /* Green */
+}
+
+.call-quality-pill.relayed .quality-dot {
+  background: #2563eb; /* Blue */
+}
+
+.call-quality-pill.reconnecting .quality-dot {
+  background: #d97706; /* Amber */
+  animation: pulse-ring 1.2s infinite;
+}
+
+.call-quality-pill.failed .quality-dot {
+  background: #dc2626; /* Red */
 }
 
 .call-dock-actions {
