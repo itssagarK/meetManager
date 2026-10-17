@@ -19,6 +19,7 @@ const initialFormData = {
   notes: '',
   link: '',
   attendees: '',
+  sendEmailInvites: true,
 };
 
 const priorityOrder = { High: 1, Medium: 2, Low: 3 };
@@ -342,7 +343,12 @@ function App() {
     }
 
     handleCloseDrawer();
-    showToast(editingId ? 'Changes saved' : drawerType === 'meeting' ? 'Meeting scheduled' : 'Task added');
+    const hasAttendeeEmails = Boolean(formData.attendees && /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.test(formData.attendees));
+    let successToast = editingId ? 'Changes saved' : drawerType === 'meeting' ? 'Meeting scheduled' : 'Task added';
+    if (!editingId && drawerType === 'meeting' && hasAttendeeEmails && formData.sendEmailInvites !== false) {
+      successToast = 'Meeting scheduled & email invites dispatched';
+    }
+    showToast(successToast);
 
     // 2. Sync with backend
     try {
@@ -2241,10 +2247,24 @@ function App() {
                     <label>Attendees</label>
                     <input
                       type="text"
-                      placeholder="e.g., Sagar (Host), Priya Sharma, Dev Team"
+                      placeholder="e.g. dev@company.com, client@partner.org"
                       value={formData.attendees}
                       onChange={(e) => setFormData({ ...formData, attendees: e.target.value })}
                     />
+                    <div className="form-field-hint">
+                      Enter email addresses separated by commas to send auto-notifications
+                    </div>
+                  </div>
+
+                  <div className="form-field email-invite-group">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={formData.sendEmailInvites !== false}
+                        onChange={(e) => setFormData({ ...formData, sendEmailInvites: e.target.checked })}
+                      />
+                      <span>Send automated email invitations & .ics calendar invites</span>
+                    </label>
                   </div>
                 </>
               )}

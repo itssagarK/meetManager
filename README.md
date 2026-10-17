@@ -10,15 +10,22 @@ Live Web Demo: [https://meetmanager-p55v.onrender.com](https://meetmanager-p55v.
 
 PCS Meet Manager is packaged directly into Chrome's native **Side Panel API** (`chrome.sidePanel`), allowing it to dock alongside any browser tab (Google Meet, Gmail, Jira, Docs) without alt-tabbing.
 
-### 1. Build the Extension Bundle
-Make sure the client production bundle is compiled:
+### 1. Build & Package the Extension Bundle
+
+To build the unpacked bundle or package a release zip for the **Chrome Web Store**:
 ```bash
 cd client
+# Build unpacked bundle into client/dist/
 npm run build
-```
-This outputs the unpacked extension bundle into `client/dist/` containing `manifest.json`, `background.js`, `index.html`, and bundled assets.
 
-### 2. Load into Chrome or Edge
+# Or build + package store-ready release zip in one step
+npm run package:extension
+```
+This generates:
+* `client/dist/`: Unpacked extension with store-compliant PNG icons (`16x16`, `48x48`, `128x128`), background service worker, and side panel bundle.
+* `pcs-meet-manager-extension.zip`: Production archive ready for drag-and-drop submission to the [Chrome Developer Dashboard](https://chrome.google.com/webstore/devconsole).
+
+### 2. Load Unpacked for Local Testing
 1. Open **Google Chrome** (or **Microsoft Edge**).
 2. Navigate to `chrome://extensions` (or `edge://extensions` in Edge).
 3. Toggle **Developer mode** in the top-right corner to **ON**.

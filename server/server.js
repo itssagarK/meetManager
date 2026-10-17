@@ -8,6 +8,7 @@ import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import nodemailer from 'nodemailer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -151,6 +152,117 @@ const getWorkspaceId = (req) => {
   return (typeof ws === 'string' && ws.trim() !== '') ? ws.trim().toLowerCase() : 'default';
 };
 
+// Configure SMTP Transporter (if environment variables are present)
+const createEmailTransporter = () => {
+  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    return null;
+  }
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT) || 587,
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+};
+
+// Generate standard .ics iCalendar file content
+const generateIcsAttachment = ({ title, date, time, link, notes }) => {
+  const cleanDate = (date || '').replace(/-/g, '');
+  const uid = `pcs-${Date.now()}@meetmanager.com`;
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//PCS Meet Manager//EN',
+    'METHOD:REQUEST',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${cleanDate}T000000Z`,
+    `DTSTART:${cleanDate}T100000Z`,
+    `SUMMARY:${title}`,
+    `DESCRIPTION:${notes ? notes.replace(/\n/g, '\\n') : 'Scheduled via PCS Meet Manager'}`,
+    `URL:${link || ''}`,
+    'STATUS:CONFIRMED',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+};
+
+// Send Meeting Email Notification
+const sendMeetingEmailNotification = async (meeting) => {
+  const { title, date, time, link, attendees, notes } = meeting;
+  if (!attendees) return;
+
+  // Extract all valid emails from attendees string
+  const emailRegex = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/g;
+  const recipientEmails = attendees.match(emailRegex);
+  if (!recipientEmails || recipientEmails.length === 0) return;
+
+  const transporter = createEmailTransporter();
+  if (!transporter) {
+    console.log(`[SMTP Not Configured] Skipped sending automated invite for "${title}" to: ${recipientEmails.join(', ')}`);
+    return;
+  }
+
+  const joinButtonHtml = link
+    ? `<div style="margin: 24px 0;">
+        <a href="${link}" style="background: #1d4ed8; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+          Join Video Meeting
+        </a>
+       </div>`
+    : '';
+
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1.5px solid #000000; padding: 24px; border-radius: 8px;">
+      <h2 style="margin-top: 0; color: #09090b; border-bottom: 1.5px solid #000000; padding-bottom: 10px;">Meeting Invitation: ${title}</h2>
+      <p style="font-size: 14px; color: #334155;">You have been invited to a meeting scheduled on <strong>PCS Meet Manager</strong>.</p>
+      
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 6px 0; font-weight: bold; width: 80px; color: #64748b;">Date:</td>
+          <td style="padding: 6px 0; font-weight: bold; color: #09090b;">${date}</td>
+        </tr>
+        <tr>
+          <td style="padding: 6px 0; font-weight: bold; color: #64748b;">Time:</td>
+          <td style="padding: 6px 0; font-weight: bold; color: #09090b;">${time}</td>
+        </tr>
+        ${link ? `<tr><td style="padding: 6px 0; font-weight: bold; color: #64748b;">Link:</td><td style="padding: 6px 0;"><a href="${link}" style="color: #1d4ed8;">${link}</a></td></tr>` : ''}
+      </table>
+
+      ${notes ? `<div style="background: #f8fafc; border-left: 3px solid #1d4ed8; padding: 12px; margin: 16px 0; font-size: 13px; color: #1e293b;"><strong style="display:block; margin-bottom:4px;">Agenda / Notes:</strong>${notes}</div>` : ''}
+
+      ${joinButtonHtml}
+
+      <p style="font-size: 11px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 12px; margin-top: 24px;">
+        Calendar invitation (.ics) is attached. Open the attachment to add this event to Google Calendar, Outlook, or Apple Calendar.
+      </p>
+    </div>
+  `;
+
+  const icsContent = generateIcsAttachment({ title, date, time, link, notes });
+
+  try {
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || `"PCS Meet Manager" <${process.env.SMTP_USER}>`,
+      to: recipientEmails.join(', '),
+      subject: `Meeting Invitation: ${title} (${date} at ${time})`,
+      html: htmlContent,
+      attachments: [
+        {
+          filename: 'invite.ics',
+          content: icsContent,
+          contentType: 'text/calendar; charset=utf-8; method=REQUEST',
+        },
+      ],
+    });
+    console.log(`[Email Sent] Successfully delivered invite for "${title}" to: ${recipientEmails.join(', ')}`);
+  } catch (err) {
+    console.error('[Email Error] Failed to send meeting invitation:', err.message);
+  }
+};
+
 // Routes
 app.get('/api/meetings', (req, res) => {
   try {
@@ -191,6 +303,14 @@ app.post('/api/meetings', (req, res) => {
     );
 
     const newItem = db.prepare('SELECT * FROM meetings WHERE id = ?').get(result.lastInsertRowid);
+
+    // Asynchronous automated email notification dispatch (0ms latency to client)
+    if (itemType === 'meeting' && attendees && attendees.trim()) {
+      sendMeetingEmailNotification(newItem).catch((err) =>
+        console.error('Email notification background error:', err)
+      );
+    }
+
     res.status(201).json(newItem);
   } catch (error) {
     res.status(500).json({ error: error.message });
