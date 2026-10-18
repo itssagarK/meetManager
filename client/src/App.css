@@ -35,14 +35,33 @@ body {
   vertical-align: middle;
 }
 
-/* Header */
+/* Executive Branding & Header Alignment */
+.brand-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-logo-badge {
+  background: #09090b;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1.5px solid var(--border-black);
+  box-shadow: 2px 2px 0 var(--border-black);
+  line-height: 1;
+}
+
 .modern-header {
   background: var(--color-white);
-  border-bottom: 2px solid var(--border-black);
+  border-bottom: 1.5px solid var(--border-black);
   position: sticky;
   top: 0;
   z-index: 40;
-  box-shadow: 0 2px 0 var(--border-black);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
 }
 .header-inner {
   max-width: 1280px;
@@ -54,17 +73,17 @@ body {
   gap: 16px;
 }
 .brand-title {
-  font-size: 22px;
-  font-weight: 800;
-  color: var(--color-black);
+  font-size: 20px;
+  font-weight: 900;
+  color: #09090b;
   margin: 0;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 .search-box {
   position: relative;
@@ -83,20 +102,21 @@ body {
 }
 .search-box input {
   width: 100%;
-  height: 32px;
+  height: 34px;
   padding: 6px 58px 6px 32px;
   background: var(--color-white);
   border: 1.5px solid var(--border-black);
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--color-black);
+  color: #09090b;
   outline: none;
+  box-shadow: 1px 1px 0 var(--border-black);
   transition: all 0.15s ease;
 }
 .search-box input:focus {
   border-color: var(--color-blue);
-  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.15);
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.18);
 }
 .palette-open-trigger {
   position: absolute;
@@ -104,7 +124,7 @@ body {
   top: 50%;
   transform: translateY(-50%);
   background: #f1f5f9;
-  color: var(--color-black);
+  color: #09090b;
   border: 1px solid var(--border-black);
   border-radius: 4px;
   font-size: 10px;
@@ -137,56 +157,53 @@ body {
   background: #e2e8f0;
 }
 
-/* Buttons with Black Borders */
-.btn-blue {
+/* Normalized Action Buttons (34px) with Tactile Offset Shadow */
+.btn-blue,
+.btn-green,
+.btn-pcs-call {
+  height: 34px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1.5px solid var(--border-black);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--border-black);
+  transition: all 0.1s ease;
+  line-height: 1;
+}
+
+.btn-blue {
   background: var(--color-blue);
   color: var(--color-white);
-  border: 1.5px solid var(--border-black);
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.15s;
 }
-.btn-blue:hover { opacity: 0.92; }
 
 .btn-green {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
   background: var(--color-green);
   color: var(--color-white);
-  border: 1.5px solid var(--border-black);
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.15s;
 }
-.btn-green:hover { opacity: 0.92; }
 
 .btn-pcs-call {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
   background: #09090b;
   color: #ffffff;
-  border: 1.5px solid var(--border-black);
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.15s;
 }
+
+.btn-blue:hover,
+.btn-green:hover,
 .btn-pcs-call:hover {
-  background: #18181b;
-  transform: translateY(-1px);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--border-black);
+}
+
+.btn-blue:active,
+.btn-green:active,
+.btn-pcs-call:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--border-black);
 }
 
 /* Keyboard Shortcut Hints */
@@ -230,73 +247,80 @@ body {
   letter-spacing: -0.025em;
 }
 .workspace-subtitle {
-  color: #1e293b; /* sharp dark slate, high contrast */
+  color: #475569; /* refined executive slate, high contrast */
   font-size: 13px;
   font-weight: 600;
   margin: 0;
 }
+
+/* Executive Utility Strip (Unified Segmented Control) */
+.executive-utility-strip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--color-white);
+  border: 1.5px solid var(--border-black);
+  border-radius: 6px;
+  box-shadow: 2px 2px 0 var(--border-black);
+  padding: 3px 6px;
+  gap: 4px;
+}
+
+.utility-strip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f172a;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.utility-strip-btn:hover {
+  background: #f1f5f9;
+}
+
+.utility-strip-btn.active {
+  color: var(--color-green);
+  font-weight: 800;
+}
+
+.strip-divider {
+  width: 1px;
+  height: 16px;
+  background: #e2e8f0;
+}
+
+.utility-strip-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-green);
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-green);
+}
+
+/* Fallback badge pill classes for backward compatibility */
 .workspace-header-badges {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-.standup-btn-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  background: var(--color-white);
-  border: 1.5px solid var(--border-black);
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--color-blue);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.standup-btn-pill:hover {
-  background: #eff6ff;
-}
-.alert-toggle-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  background: var(--color-white);
-  border: 1.5px solid var(--border-black);
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--color-black);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.alert-toggle-pill:hover {
-  background: #f3f4f6;
-}
-.alert-toggle-pill.active {
-  background: var(--color-white);
-  color: var(--color-green);
-  border-color: var(--border-black);
-}
-.workspace-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  background: var(--color-white);
-  border: 1.5px solid var(--border-black);
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #0f172a;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.workspace-pill:hover {
-  background: #f1f5f9;
-  transform: translateY(-1px);
-}
+.standup-btn-pill,
+.alert-toggle-pill,
+.workspace-pill,
 .live-sync-pill {
   display: inline-flex;
   align-items: center;
@@ -307,16 +331,9 @@ body {
   border-radius: 20px;
   font-size: 12px;
   font-weight: 700;
-  color: var(--color-green);
-}
-.pulse-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-green);
 }
 
-/* Bento Cards with Solid Black Borders */
+/* Bento Cards with Solid Black Borders and Elevated Depth */
 .bento-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -332,6 +349,12 @@ body {
   padding: 16px 18px;
   position: relative;
   overflow: hidden;
+  box-shadow: 2px 2px 0 var(--border-black);
+  transition: all 0.15s ease;
+}
+.bento-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 3px 3px 0 var(--border-black);
 }
 .bento-card.blue { border-left: 6px solid var(--color-blue); }
 .bento-card.red { border-left: 6px solid var(--color-red); }
@@ -346,7 +369,7 @@ body {
 .bento-label {
   font-size: 13px;
   font-weight: 700;
-  color: var(--color-black);
+  color: #475569;
 }
 .bento-value-row {
   margin-top: 10px;
@@ -355,9 +378,11 @@ body {
   gap: 8px;
 }
 .bento-value {
-  font-size: 30px;
-  font-weight: 800;
-  color: var(--color-black);
+  font-size: 32px;
+  font-weight: 900;
+  color: #09090b;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
 }
 
 /* View & Filter Bar (Executive Segmented Controls) */

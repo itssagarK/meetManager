@@ -1312,10 +1312,13 @@ function App() {
 
   return (
     <div>
-      {/* Top Header - Clean, no nav links */}
+      {/* Top Header - Executive branding & unified controls */}
       <header className="modern-header">
         <div className="header-inner">
-          <h2 className="brand-title">PCS Meet Manager</h2>
+          <div className="brand-group">
+            <span className="brand-logo-badge">PCS</span>
+            <h2 className="brand-title">Meet Manager</h2>
+          </div>
 
           <div className="header-right">
             <div className="search-box">
@@ -1323,7 +1326,7 @@ function App() {
               <input
                 id="global-search-input"
                 type="text"
-                placeholder="Search tasks, meetings... [/]"
+                placeholder="Search items... [/]"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -1358,12 +1361,12 @@ function App() {
             </button>
             <button className="btn-blue" onClick={() => handleOpenCreateTask(selectedDate)}>
               <span className="material-symbols-outlined">add</span>
-              <span>+ New Task</span>
+              <span>New Task</span>
               <span className="kbd-hint">T</span>
             </button>
             <button className="btn-green" onClick={() => handleOpenCreateMeeting(selectedDate)}>
               <span className="material-symbols-outlined">event</span>
-              <span>+ Schedule Meeting</span>
+              <span>Schedule</span>
               <span className="kbd-hint">M</span>
             </button>
           </div>
@@ -1372,45 +1375,48 @@ function App() {
 
       {/* Main Workspace */}
       <main className="workspace-container">
-        {/* Workspace Title & Live Status */}
+        {/* Workspace Title & Executive Utility Strip */}
         <div className="workspace-header">
           <div>
             <h1 className="workspace-title">Executive Workspace Overview</h1>
             <p className="workspace-subtitle">Manage tasks and schedule meetings with clear priorities</p>
           </div>
-          <div className="workspace-header-badges">
+          <div className="executive-utility-strip">
             <button
               type="button"
-              className="standup-btn-pill"
+              className="utility-strip-btn"
               onClick={handleCopyDailyStandup}
               title="Copy formatted daily standup update for Slack/Teams"
             >
               <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>content_paste</span>
-              <span>Copy Standup</span>
+              <span>Standup</span>
             </button>
+            <div className="strip-divider"></div>
             <button
               type="button"
-              className={`alert-toggle-pill ${notificationsEnabled ? 'active' : ''}`}
+              className={`utility-strip-btn ${notificationsEnabled ? 'active' : ''}`}
               onClick={handleRequestNotificationPermission}
               title={notificationsEnabled ? 'Desktop alerts enabled (2-min warning)' : 'Click to enable desktop meeting notifications'}
             >
               <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>
                 {notificationsEnabled ? 'notifications_active' : 'notifications_none'}
               </span>
-              <span>{notificationsEnabled ? 'Alerts Active (2m)' : 'Enable Alerts'}</span>
+              <span>{notificationsEnabled ? 'Alerts On' : 'Alerts'}</span>
             </button>
+            <div className="strip-divider"></div>
             <button
               type="button"
-              className="workspace-pill"
+              className="utility-strip-btn"
               onClick={handleSwitchWorkspace}
               title="Click to copy your private workspace key or switch workspaces"
             >
               <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>folder_shared</span>
               <span>{workspaceId}</span>
             </button>
-            <div className="live-sync-pill">
+            <div className="strip-divider"></div>
+            <div className="utility-strip-status" title={serverOnline ? 'Connected to local backend' : 'Operating in local offline cache mode'}>
               <span className="pulse-dot"></span>
-              <span>{serverOnline ? 'Backend Connected' : 'Local Offline Mode'}</span>
+              <span>{serverOnline ? 'Online' : 'Offline'}</span>
             </div>
           </div>
         </div>
