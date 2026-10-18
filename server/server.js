@@ -125,13 +125,14 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', database: 'connected' });
 });
 
-// WebRTC ICE Server Configuration Endpoint (STUN + optional TURN Relay)
+// WebRTC ICE Server Configuration Endpoint (STUN + optional TURN Relay + Public Base URL)
 app.get('/api/webrtc/ice-config', (req, res) => {
   const iceServers = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun.services.mozilla.com' },
   ];
 
   // If production environment variables for a TURN server are provided
@@ -143,7 +144,14 @@ app.get('/api/webrtc/ice-config', (req, res) => {
     });
   }
 
-  res.json({ iceServers });
+  // Derive public URL from environment or reverse proxy headers
+  const forwardedProto = req.headers['x-forwarded-proto'] || req.protocol;
+  const detectedHost = req.headers['x-forwarded-host'] || req.headers.host;
+  const publicUrl = process.env.PUBLIC_URL 
+    ? process.env.PUBLIC_URL.replace(/\/$/, '') 
+    : `${forwardedProto}://${detectedHost}`;
+
+  res.json({ iceServers, publicUrl });
 });
 
 // Workspace extraction helper for multi-tenancy
@@ -206,9 +214,17 @@ const sendMeetingEmailNotification = async (meeting) => {
     return;
   }
 
-  const joinButtonHtml = link
+  // Ensure meeting link resolves to an absolute public URL
+  let resolvedLink = link;
+  if (link && !link.startsWith('http://') && !link.startsWith('https://')) {
+    const base = process.env.PUBLIC_URL ? process.env.PUBLIC_URL.replace(/\/$/, '') : 'http://localhost:5000';
+    const query = link.startsWith('?') ? link : (link.startsWith('room=') ? `?${link}` : `?room=${link}`);
+    resolvedLink = `${base}${query}`;
+  }
+
+  const joinButtonHtml = resolvedLink
     ? `<div style="margin: 24px 0;">
-        <a href="${link}" style="background: #1d4ed8; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+        <a href="${resolvedLink}" style="background: #1d4ed8; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
           Join Video Meeting
         </a>
        </div>`
@@ -228,7 +244,7 @@ const sendMeetingEmailNotification = async (meeting) => {
           <td style="padding: 6px 0; font-weight: bold; color: #64748b;">Time:</td>
           <td style="padding: 6px 0; font-weight: bold; color: #09090b;">${time}</td>
         </tr>
-        ${link ? `<tr><td style="padding: 6px 0; font-weight: bold; color: #64748b;">Link:</td><td style="padding: 6px 0;"><a href="${link}" style="color: #1d4ed8;">${link}</a></td></tr>` : ''}
+        ${resolvedLink ? `<tr><td style="padding: 6px 0; font-weight: bold; color: #64748b;">Link:</td><td style="padding: 6px 0;"><a href="${resolvedLink}" style="color: #1d4ed8;">${resolvedLink}</a></td></tr>` : ''}
       </table>
 
       ${notes ? `<div style="background: #f8fafc; border-left: 3px solid #1d4ed8; padding: 12px; margin: 16px 0; font-size: 13px; color: #1e293b;"><strong style="display:block; margin-bottom:4px;">Agenda / Notes:</strong>${notes}</div>` : ''}
@@ -241,7 +257,7 @@ const sendMeetingEmailNotification = async (meeting) => {
     </div>
   `;
 
-  const icsContent = generateIcsAttachment({ title, date, time, link, notes });
+  const icsContent = generateIcsAttachment({ title, date, time, link: resolvedLink, notes });
 
   try {
     await transporter.sendMail({

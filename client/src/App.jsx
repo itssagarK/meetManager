@@ -71,6 +71,14 @@ function App() {
   const [callStatusText, setCallStatusText] = useState('');
   const [iceServersList, setIceServersList] = useState(RTC_CONFIG.iceServers);
   const [callQuality, setCallQuality] = useState('connecting'); // 'connecting' | 'stable' | 'relayed' | 'reconnecting' | 'failed'
+  const [publicBaseUrl, setPublicBaseUrl] = useState('');
+  const [isGuestMode, setIsGuestMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return Boolean(params.get('room'));
+    }
+    return false;
+  });
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -432,11 +440,18 @@ function App() {
   };
 
   const handleCopyMeetingInvite = (item) => {
+    let resolvedLink = item.link;
+    if (resolvedLink && !resolvedLink.startsWith('http://') && !resolvedLink.startsWith('https://')) {
+      const base = publicBaseUrl || window.location.origin;
+      const query = resolvedLink.startsWith('?') ? resolvedLink : (resolvedLink.startsWith('room=') ? `?${resolvedLink}` : `?room=${resolvedLink}`);
+      resolvedLink = `${base}${query}`;
+    }
+
     const inviteText = [
       `Meeting: ${item.title}`,
       `Date & Time: ${item.date} at ${item.time}`,
       item.attendees ? `Attendees: ${item.attendees}` : null,
-      item.link ? `Join Link: ${item.link}` : null,
+      resolvedLink ? `Join Link: ${resolvedLink}` : null,
       item.notes ? `Agenda / Notes: ${item.notes}` : null,
     ]
       .filter(Boolean)
@@ -921,7 +936,7 @@ function App() {
 
   const handleCopyGuestLink = () => {
     if (!activeCallRoom) return;
-    const origin = window.location.origin;
+    const origin = publicBaseUrl || window.location.origin;
     const guestUrl = `${origin}?room=${activeCallRoom}`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(guestUrl);
@@ -938,13 +953,18 @@ function App() {
     }
   }, [activeCallRoom, isCallMinimized]);
 
-  // Fetch production ICE configuration (STUN + TURN relay) from backend
+  // Fetch production ICE configuration (STUN + TURN relay + Public URL) from backend
   useEffect(() => {
     fetch('/api/webrtc/ice-config')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data && data.iceServers && data.iceServers.length > 0) {
-          setIceServersList(data.iceServers);
+        if (data) {
+          if (data.iceServers && data.iceServers.length > 0) {
+            setIceServersList(data.iceServers);
+          }
+          if (data.publicUrl) {
+            setPublicBaseUrl(data.publicUrl);
+          }
         }
       })
       .catch((err) => console.warn('Using default STUN servers:', err));
@@ -1309,6 +1329,163 @@ function App() {
     }
     return streak;
   })();
+
+  // Dedicated Guest Video Room (When external user joins via ?room=...)
+  if (isGuestMode) {
+    const currentRoom = activeCallRoom || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('room') : '');
+    return (
+      <div className="guest-screen-wrapper">
+        <header className="guest-header">
+          <div className="guest-header-inner">
+            <div className="brand-group">
+              <span className="brand-logo-badge">PCS</span>
+              <h2 className="brand-title">Executive Meeting Room</h2>
+            </div>
+            <div className="guest-header-meta">
+              <span className="guest-room-pill">
+                Room: <strong>{currentRoom}</strong>
+              </span>
+              <div className={`call-quality-pill ${callQuality}`}>
+                <span className="quality-dot"></span>
+                <span className="quality-text">
+                  {callQuality === 'stable' && 'P2P Direct'}
+                  {callQuality === 'relayed' && 'TURN Relay'}
+                  {callQuality === 'connecting' && 'Connecting...'}
+                  {callQuality === 'reconnecting' && 'Reconnecting...'}
+                  {callQuality === 'failed' && 'Offline'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <main className="guest-stage">
+          {activeCallRoom ? (
+            <div className="guest-video-grid">
+              {/* Remote Video Container */}
+              <div className="guest-video-box remote">
+                <video ref={remoteVideoRef} autoPlay playsInline className="guest-video-element" />
+                {!isCallConnected && (
+                  <div className="guest-waiting-hud">
+                    <span className="material-symbols-outlined waiting-icon">video_camera_front</span>
+                    <h3>{callStatusText || 'Waiting for host to connect...'}</h3>
+                    <p>Share this link with attendees or wait for the host to enter.</p>
+                    <button type="button" className="btn-copy-invite" onClick={handleCopyGuestLink}>
+                      <span className="material-symbols-outlined">content_copy</span>
+                      <span>Copy Meeting Link</span>
+                    </button>
+                  </div>
+                )}
+                <div className="video-participant-badge">
+                  Host / Peer {isCallConnected ? '(Live)' : ''}
+                </div>
+              </div>
+
+              {/* Local Video Container */}
+              <div className="guest-video-box local">
+                {isVideoOff ? (
+                  <div className="guest-camera-off-slate">
+                    <span className="material-symbols-outlined">videocam_off</span>
+                    <span>Camera Off</span>
+                  </div>
+                ) : (
+                  <video ref={localVideoRef} autoPlay playsInline muted className="guest-video-element local-mirror" />
+                )}
+                <div className="video-participant-badge">
+                  You {isAudioMuted ? '(Muted)' : ''}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="guest-rejoin-card">
+              <h2>You have left the meeting</h2>
+              <p>You can rejoin this room or switch to the main workspace.</p>
+              <div className="guest-rejoin-actions">
+                <button
+                  type="button"
+                  className="btn-green"
+                  style={{ height: '38px', padding: '0 18px', fontSize: '13px' }}
+                  onClick={() => {
+                    const r = new URLSearchParams(window.location.search).get('room');
+                    if (r) handleJoinCallRoom(r, false);
+                  }}
+                >
+                  <span className="material-symbols-outlined">videocam</span>
+                  <span>Rejoin Meeting</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn-blue"
+                  style={{ height: '38px', padding: '0 18px', fontSize: '13px' }}
+                  onClick={() => setIsGuestMode(false)}
+                >
+                  <span className="material-symbols-outlined">dashboard</span>
+                  <span>Open Workspace Dashboard</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </main>
+
+        {activeCallRoom && (
+          <footer className="guest-controls-bar">
+            <button
+              type="button"
+              className={`guest-ctl-btn ${isAudioMuted ? 'active-mute' : ''}`}
+              onClick={handleToggleAudio}
+              title={isAudioMuted ? 'Unmute' : 'Mute'}
+            >
+              <span className="material-symbols-outlined">{isAudioMuted ? 'mic_off' : 'mic'}</span>
+              <span>{isAudioMuted ? 'Unmute' : 'Mute'}</span>
+            </button>
+            <button
+              type="button"
+              className={`guest-ctl-btn ${isVideoOff ? 'active-mute' : ''}`}
+              onClick={handleToggleVideo}
+              title={isVideoOff ? 'Start Video' : 'Stop Video'}
+            >
+              <span className="material-symbols-outlined">{isVideoOff ? 'videocam_off' : 'videocam'}</span>
+              <span>{isVideoOff ? 'Start Video' : 'Stop Video'}</span>
+            </button>
+            <button
+              type="button"
+              className={`guest-ctl-btn ${isScreenSharing ? 'active-share' : ''}`}
+              onClick={handleToggleScreenShare}
+              title={isScreenSharing ? 'Stop Share' : 'Share Screen'}
+            >
+              <span className="material-symbols-outlined">{isScreenSharing ? 'stop_screen_share' : 'screen_share'}</span>
+              <span>{isScreenSharing ? 'Stop Share' : 'Share'}</span>
+            </button>
+            <button
+              type="button"
+              className="guest-ctl-btn"
+              onClick={handleCopyGuestLink}
+              title="Copy Meeting Link"
+            >
+              <span className="material-symbols-outlined">link</span>
+              <span>Copy Link</span>
+            </button>
+            <button
+              type="button"
+              className="guest-ctl-btn end-call-btn"
+              onClick={handleEndCall}
+              title="Leave Call"
+            >
+              <span className="material-symbols-outlined">call_end</span>
+              <span>Leave</span>
+            </button>
+          </footer>
+        )}
+
+        {toastMessage && (
+          <div className="toast-notice">
+            <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
+            <span>{toastMessage}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div>
