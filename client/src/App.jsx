@@ -2711,6 +2711,55 @@ function App() {
         </div>
       )}
 
+      {/* Mobile Sticky Quick-Action Dock (Direct 1-tap mobile access) */}
+      <nav className="mobile-action-bar">
+        <button
+          type="button"
+          className="mobile-nav-item"
+          onClick={() => handleOpenCreateTask(selectedDate)}
+          title="Create New Task"
+        >
+          <span className="material-symbols-outlined">add_task</span>
+          <span>+ Task</span>
+        </button>
+        <button
+          type="button"
+          className="mobile-nav-item"
+          onClick={() => handleOpenCreateMeeting(selectedDate)}
+          title="Schedule Meeting"
+        >
+          <span className="material-symbols-outlined">calendar_add_on</span>
+          <span>+ Meet</span>
+        </button>
+        <button
+          type="button"
+          className="mobile-nav-item highlight-call"
+          onClick={() => handleStartInstantCall()}
+          title="Start Instant WebRTC Call"
+        >
+          <span className="material-symbols-outlined">videocam</span>
+          <span>Call</span>
+        </button>
+        <button
+          type="button"
+          className="mobile-nav-item"
+          onClick={() => setIsPaletteOpen(true)}
+          title="Search / Command Palette"
+        >
+          <span className="material-symbols-outlined">search</span>
+          <span>Search</span>
+        </button>
+        <button
+          type="button"
+          className="mobile-nav-item"
+          onClick={handleCopyDailyStandup}
+          title="Copy Daily Standup"
+        >
+          <span className="material-symbols-outlined">content_paste</span>
+          <span>Standup</span>
+        </button>
+      </nav>
+
       {/* Toast Alert */}
       {toastMessage && (
         <div className="toast-notice">
