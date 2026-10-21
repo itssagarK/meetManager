@@ -45,6 +45,7 @@ function App() {
   const [statusFilter, setStatusFilter] = useState('All');
   const [typeFilter, setTypeFilter] = useState('All'); // 'All' | 'tasks' | 'meetings'
   const [viewMode, setViewMode] = useState('calendar'); // 'calendar' | 'table' | 'cards' | 'analytics'
+  const [calSubView, setCalSubView] = useState('month'); // 'month' | 'week'
   const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [toastMessage, setToastMessage] = useState('');
@@ -1180,6 +1181,54 @@ function App() {
   const handlePrevMonth = () => setCurrentCalendarDate(new Date(calYear, calMonth - 1, 1));
   const handleNextMonth = () => setCurrentCalendarDate(new Date(calYear, calMonth + 1, 1));
 
+  // Current Week dates calculation
+  const getWeekDates = (baseDateStr) => {
+    const base = new Date((baseDateStr || todayStr) + 'T00:00:00');
+    const dayOfWeek = base.getDay();
+    const sunday = new Date(base);
+    sunday.setDate(base.getDate() - dayOfWeek);
+    const week = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(sunday);
+      d.setDate(sunday.getDate() + i);
+      week.push(d.toISOString().split('T')[0]);
+    }
+    return week;
+  };
+  const activeWeekDates = getWeekDates(selectedDate);
+
+  // Monthly Workload & Completion Stats
+  const currentMonthPrefix = `${calYear}-${String(calMonth + 1).padStart(2, '0')}`;
+  const monthItems = items.filter((it) => it.date && it.date.startsWith(currentMonthPrefix));
+  const monthMeetingsCount = monthItems.filter(isMeeting).length;
+  const monthTasksCount = monthItems.length - monthMeetingsCount;
+  const monthCompletedCount = monthItems.filter((it) => it.status === 'Completed').length;
+  const monthCompletionPercent = monthItems.length > 0 ? Math.round((monthCompletedCount / monthItems.length) * 100) : 0;
+
+  const handlePrevPeriod = () => {
+    if (calSubView === 'week') {
+      const d = new Date((selectedDate || todayStr) + 'T00:00:00');
+      d.setDate(d.getDate() - 7);
+      const newDateStr = d.toISOString().split('T')[0];
+      setSelectedDate(newDateStr);
+      setCurrentCalendarDate(d);
+    } else {
+      handlePrevMonth();
+    }
+  };
+
+  const handleNextPeriod = () => {
+    if (calSubView === 'week') {
+      const d = new Date((selectedDate || todayStr) + 'T00:00:00');
+      d.setDate(d.getDate() + 7);
+      const newDateStr = d.toISOString().split('T')[0];
+      setSelectedDate(newDateStr);
+      setCurrentCalendarDate(d);
+    } else {
+      handleNextMonth();
+    }
+  };
+
   // Map items by date
   const itemsByDate = items.reduce((acc, it) => {
     if (!acc[it.date]) acc[it.date] = [];
@@ -1839,71 +1888,221 @@ function App() {
             {/* Calendar View */}
             {viewMode === 'calendar' && (
               <div className="calendar-card">
+                {/* Executive Calendar Top Bar */}
                 <div className="calendar-top">
-                  <h2>{monthNames[calMonth]} {calYear}</h2>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button className="cal-nav-btn" onClick={handlePrevMonth} title="Previous Month">
-                      <span className="material-symbols-outlined">chevron_left</span>
-                    </button>
-                    <button className="cal-nav-btn" onClick={() => setCurrentCalendarDate(new Date())}>
-                      Today
-                    </button>
-                    <button className="cal-nav-btn" onClick={handleNextMonth} title="Next Month">
-                      <span className="material-symbols-outlined">chevron_right</span>
-                    </button>
+                  <div className="cal-header-left">
+                    <h2>{monthNames[calMonth]} {calYear}</h2>
+                    <div className="cal-load-chip">
+                      <span>{monthTasksCount} Tasks</span>
+                      <span className="chip-dot">•</span>
+                      <span>{monthMeetingsCount} Meetings</span>
+                    </div>
+                  </div>
+
+                  <div className="cal-header-actions">
+                    <div className="cal-nav-group">
+                      <button type="button" className="cal-nav-btn" onClick={handlePrevPeriod} title="Previous Period">
+                        <span className="material-symbols-outlined">chevron_left</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="cal-nav-btn"
+                        onClick={() => {
+                          setCurrentCalendarDate(new Date());
+                          setSelectedDate(todayStr);
+                        }}
+                      >
+                        Today
+                      </button>
+                      <button type="button" className="cal-nav-btn" onClick={handleNextPeriod} title="Next Period">
+                        <span className="material-symbols-outlined">chevron_right</span>
+                      </button>
+                    </div>
+
+                    {/* Sub-View Switcher: Month vs. Week */}
+                    <div className="cal-view-segmented">
+                      <button
+                        type="button"
+                        className={`cal-view-btn ${calSubView === 'month' ? 'active' : ''}`}
+                        onClick={() => setCalSubView('month')}
+                      >
+                        Month
+                      </button>
+                      <button
+                        type="button"
+                        className={`cal-view-btn ${calSubView === 'week' ? 'active' : ''}`}
+                        onClick={() => setCalSubView('week')}
+                      >
+                        Week
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                <div className="calendar-weekdays-grid">
-                  <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
-                </div>
+                {/* Month Grid View */}
+                {calSubView === 'month' && (
+                  <>
+                    <div className="calendar-weekdays-grid">
+                      <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+                    </div>
 
-                <div className="calendar-matrix">
-                  {Array.from({ length: firstDayIndex }).map((_, i) => (
-                    <div key={`empty-${i}`} className="cal-matrix-day empty"></div>
-                  ))}
+                    <div className="calendar-matrix">
+                      {Array.from({ length: firstDayIndex }).map((_, i) => (
+                        <div key={`empty-${i}`} className="cal-matrix-day empty"></div>
+                      ))}
 
-                  {Array.from({ length: daysInMonth }).map((_, i) => {
-                    const dayNum = i + 1;
-                    const formattedDay = String(dayNum).padStart(2, '0');
-                    const formattedMonth = String(calMonth + 1).padStart(2, '0');
-                    const dateStr = `${calYear}-${formattedMonth}-${formattedDay}`;
-                    const dayItems = (itemsByDate[dateStr] || []).sort(
-                      (a, b) => (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2)
-                    );
-                    const isSelected = selectedDate === dateStr;
-                    const isToday = new Date().toISOString().split('T')[0] === dateStr;
+                      {Array.from({ length: daysInMonth }).map((_, i) => {
+                        const dayNum = i + 1;
+                        const formattedDay = String(dayNum).padStart(2, '0');
+                        const formattedMonth = String(calMonth + 1).padStart(2, '0');
+                        const dateStr = `${calYear}-${formattedMonth}-${formattedDay}`;
+                        const dayItems = (itemsByDate[dateStr] || []).sort(
+                          (a, b) => (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2)
+                        );
+                        const isSelected = selectedDate === dateStr;
+                        const isToday = todayStr === dateStr;
+                        const hasTask = dayItems.some((it) => !isMeeting(it));
+                        const hasMeeting = dayItems.some(isMeeting);
+                        const hasUrgent = dayItems.some((it) => it.priority === 'High');
 
-                    return (
-                      <div
-                        key={dateStr}
-                        className={`cal-matrix-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
-                        onClick={() => setSelectedDate(dateStr)}
-                      >
-                        <div className="day-header-number">{dayNum}</div>
-                        <div>
-                          {dayItems.slice(0, 2).map((it) => {
-                            const itMeeting = isMeeting(it);
-                            const isUrgent = it.priority === 'High';
-                            return (
-                              <span
-                                key={it.id}
-                                className={`cal-badge ${isUrgent ? 'urgent' : itMeeting ? 'meeting' : 'task'}`}
-                                title={`${it.time} - ${it.title}`}
+                        return (
+                          <div
+                            key={dateStr}
+                            className={`cal-matrix-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+                            onClick={() => setSelectedDate(dateStr)}
+                          >
+                            <div className="cal-day-header">
+                              <div className="cal-day-header-left">
+                                <span className="day-header-number">{dayNum}</span>
+                                {/* Density Meter Dots */}
+                                <div className="cal-density-dots">
+                                  {hasTask && <span className="density-dot task"></span>}
+                                  {hasMeeting && <span className="density-dot meeting"></span>}
+                                  {hasUrgent && <span className="density-dot urgent"></span>}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                className="cal-day-add-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedDate(dateStr);
+                                  handleOpenCreateTask(dateStr);
+                                }}
+                                title={`Add task on ${dateStr}`}
                               >
-                                {itMeeting ? '[M] ' : ''}{it.title}
-                              </span>
-                            );
-                          })}
-                          {dayItems.length > 2 && (
-                            <span className="cal-badge" style={{ color: 'var(--color-black)', background: '#ffffff' }}>
-                              +{dayItems.length - 2} more
-                            </span>
-                          )}
+                                +
+                              </button>
+                            </div>
+
+                            <div className="cal-day-badges-stack">
+                              {dayItems.slice(0, 2).map((it) => {
+                                const itMeeting = isMeeting(it);
+                                const isUrgent = it.priority === 'High';
+                                return (
+                                  <span
+                                    key={it.id}
+                                    className={`cal-badge ${isUrgent ? 'urgent' : itMeeting ? 'meeting' : 'task'}`}
+                                    title={`${it.time} - ${it.title}`}
+                                  >
+                                    {itMeeting ? '[M] ' : ''}{it.title}
+                                  </span>
+                                );
+                              })}
+                              {dayItems.length > 2 && (
+                                <span className="cal-badge-more">
+                                  +{dayItems.length - 2} more
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {/* 7-Day Executive Week Sprint Board */}
+                {calSubView === 'week' && (
+                  <div className="cal-week-board">
+                    {activeWeekDates.map((dateStr) => {
+                      const dObj = new Date(dateStr + 'T00:00:00');
+                      const dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dObj.getDay()];
+                      const dayNum = dObj.getDate();
+                      const isSelected = selectedDate === dateStr;
+                      const isToday = todayStr === dateStr;
+                      const dayItems = (itemsByDate[dateStr] || []).sort(
+                        (a, b) => (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2)
+                      );
+
+                      return (
+                        <div
+                          key={dateStr}
+                          className={`cal-week-column ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+                          onClick={() => setSelectedDate(dateStr)}
+                        >
+                          <div className="cal-week-col-header">
+                            <span className="cal-week-day-name">{dayName}</span>
+                            <span className="cal-week-day-num">{dayNum}</span>
+                            <span className="cal-week-count">{dayItems.length}</span>
+                          </div>
+
+                          <div className="cal-week-col-items">
+                            {dayItems.length === 0 ? (
+                              <div className="cal-week-empty">No items</div>
+                            ) : (
+                              dayItems.map((it) => (
+                                <div
+                                  key={it.id}
+                                  className={`cal-week-item-card ${isMeeting(it) ? 'meeting-card' : 'task-card'}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenEdit(it);
+                                  }}
+                                  title="Click to view/edit details"
+                                >
+                                  <span className="cal-week-item-time">{it.time}</span>
+                                  <strong className="cal-week-item-title">{it.title}</strong>
+                                </div>
+                              ))
+                            )}
+                          </div>
+
+                          <button
+                            type="button"
+                            className="cal-week-add-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedDate(dateStr);
+                              handleOpenCreateTask(dateStr);
+                            }}
+                            title={`Add item on ${dayName}, ${dateStr}`}
+                          >
+                            + Add
+                          </button>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Executive Calendar Footer Strip */}
+                <div className="calendar-footer-strip">
+                  <div className="cal-legend-group">
+                    <span className="cal-legend-item"><span className="legend-dot task"></span> Task</span>
+                    <span className="cal-legend-item"><span className="legend-dot meeting"></span> Meeting</span>
+                    <span className="cal-legend-item"><span className="legend-dot urgent"></span> High Priority</span>
+                    <span className="cal-legend-item"><span className="legend-box today"></span> Today</span>
+                  </div>
+
+                  <div className="cal-progress-group">
+                    <span className="cal-progress-text">
+                      {monthCompletionPercent}% completed ({monthCompletedCount}/{monthItems.length})
+                    </span>
+                    <div className="cal-progress-bar">
+                      <div className="cal-progress-fill" style={{ width: `${monthCompletionPercent}%` }}></div>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
