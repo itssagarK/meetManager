@@ -389,6 +389,82 @@ app.delete('/api/meetings/:id', (req, res) => {
   }
 });
 
+// Rooms map to track live active rooms, host sockets, and knocking waiting queues
+const rooms = new Map();
+
+// Helper to get or create room state
+const getOrCreateRoom = (roomId) => {
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, {
+      hostSocket: null,
+      participants: new Set(),
+      waitingGuests: new Map(),
+    });
+  }
+  return rooms.get(roomId);
+};
+
+// Public endpoint: List meetings with live room status for the public portal
+app.get('/api/public/live-meetings', (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const items = db.prepare(`
+      SELECT id, title, date, time, link, attendees, priority, type
+      FROM meetings
+      WHERE (date >= ? OR date = '') AND (type = 'meeting' OR link != '')
+      ORDER BY date ASC, time ASC
+    `).all(today);
+
+    const publicList = items.map((m) => {
+      let roomId = null;
+      if (m.link) {
+        const match = m.link.match(/room=([a-zA-Z0-9_-]+)/);
+        if (match) {
+          roomId = match[1];
+        } else if (!m.link.startsWith('http://') && !m.link.startsWith('https://')) {
+          roomId = m.link.replace(/^\?/, '').replace(/^room=/, '');
+        }
+      }
+      if (!roomId) {
+        roomId = `pcs-${m.id}`;
+      }
+
+      const roomData = rooms.get(roomId);
+      const isLive = Boolean(roomData && roomData.hostSocket && roomData.hostSocket.readyState === WebSocket.OPEN);
+
+      return {
+        id: m.id,
+        title: m.title,
+        date: m.date,
+        time: m.time,
+        roomId,
+        isLive,
+        participantCount: roomData ? roomData.participants.size : 0,
+      };
+    });
+
+    res.json(publicList);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Public endpoint: Check specific room status
+app.get('/api/public/room-status', (req, res) => {
+  const roomId = req.query.room;
+  if (!roomId) return res.status(400).json({ error: 'room parameter required' });
+
+  const roomData = rooms.get(roomId);
+  const isLive = Boolean(roomData && roomData.hostSocket && roomData.hostSocket.readyState === WebSocket.OPEN);
+
+  res.json({
+    roomId,
+    isLive,
+    participantCount: roomData ? roomData.participants.size : 0,
+    hasWaitingQueue: roomData ? roomData.waitingGuests.size > 0 : false,
+  });
+});
+
 // Production static assets
 if (isProduction) {
   const clientDist = path.join(__dirname, '../client/dist');
@@ -398,36 +474,125 @@ if (isProduction) {
   });
 }
 
-// WebSocket Signaling Server for Instant WebRTC Calling
+// WebSocket Signaling Server for Instant WebRTC Calling & Guest Admission
 const wss = new WebSocketServer({ server, path: '/ws' });
-const rooms = new Map(); // roomId -> Set of WebSocket clients
 
 wss.on('connection', (ws) => {
   let currentRoom = null;
+  let isHostRole = false;
+  let clientGuestId = null;
 
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      const { type, roomId, payload } = data;
+      const { type, roomId, payload, guest, guestId, reason } = data;
 
-      if (type === 'join-room') {
+      if (type === 'host-join') {
         currentRoom = roomId;
-        if (!rooms.has(roomId)) {
-          rooms.set(roomId, new Set());
-        }
-        const roomClients = rooms.get(roomId);
-        roomClients.add(ws);
+        isHostRole = true;
+        const room = getOrCreateRoom(roomId);
+        room.hostSocket = ws;
+        room.participants.add(ws);
 
-        // Notify other peers in this room that a peer has joined
-        roomClients.forEach((client) => {
+        ws.send(JSON.stringify({
+          type: 'host-ready',
+          roomId,
+          waitingGuests: Array.from(room.waitingGuests.values()).map((g) => ({
+            id: g.id,
+            name: g.name,
+            officeId: g.officeId,
+            timestamp: g.timestamp,
+          })),
+        }));
+      } else if (type === 'join-room') {
+        // Fallback for direct participants
+        currentRoom = roomId;
+        const room = getOrCreateRoom(roomId);
+        room.participants.add(ws);
+
+        room.participants.forEach((client) => {
           if (client !== ws && client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify({ type: 'peer-joined', roomId }));
           }
         });
+      } else if (type === 'guest-knock') {
+        currentRoom = roomId;
+        clientGuestId = (guest && guest.id) || `guest-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        const room = getOrCreateRoom(roomId);
+        const guestRecord = {
+          id: clientGuestId,
+          name: (guest && guest.name) ? guest.name.trim() : 'Guest User',
+          officeId: (guest && guest.officeId) ? guest.officeId.trim() : 'N/A',
+          ws,
+          timestamp: Date.now(),
+        };
+        room.waitingGuests.set(clientGuestId, guestRecord);
+
+        const isHostOnline = Boolean(room.hostSocket && room.hostSocket.readyState === WebSocket.OPEN);
+
+        if (isHostOnline) {
+          room.hostSocket.send(JSON.stringify({
+            type: 'guest-knock-request',
+            roomId,
+            guest: {
+              id: clientGuestId,
+              name: guestRecord.name,
+              officeId: guestRecord.officeId,
+              timestamp: guestRecord.timestamp,
+            },
+          }));
+        }
+
+        ws.send(JSON.stringify({
+          type: 'knock-status',
+          status: 'pending',
+          isHostOnline,
+          guestId: clientGuestId,
+        }));
+      } else if (type === 'admit-guest') {
+        if (!currentRoom || !rooms.has(currentRoom)) return;
+        const room = rooms.get(currentRoom);
+        const waitingGuest = room.waitingGuests.get(guestId);
+
+        if (waitingGuest && waitingGuest.ws.readyState === WebSocket.OPEN) {
+          room.participants.add(waitingGuest.ws);
+          room.waitingGuests.delete(guestId);
+
+          waitingGuest.ws.send(JSON.stringify({
+            type: 'guest-admitted',
+            roomId: currentRoom,
+          }));
+
+          room.participants.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({ type: 'peer-joined', roomId: currentRoom }));
+            }
+          });
+
+          if (room.hostSocket && room.hostSocket.readyState === WebSocket.OPEN) {
+            room.hostSocket.send(JSON.stringify({
+              type: 'guest-admitted-ack',
+              guestId,
+              remainingWaiting: room.waitingGuests.size,
+            }));
+          }
+        }
+      } else if (type === 'deny-guest') {
+        if (!currentRoom || !rooms.has(currentRoom)) return;
+        const room = rooms.get(currentRoom);
+        const waitingGuest = room.waitingGuests.get(guestId);
+
+        if (waitingGuest && waitingGuest.ws.readyState === WebSocket.OPEN) {
+          waitingGuest.ws.send(JSON.stringify({
+            type: 'guest-denied',
+            reason: reason || 'Host declined entry for this session.',
+          }));
+          room.waitingGuests.delete(guestId);
+        }
       } else if (type === 'signal') {
-        // Relay WebRTC SDP offers, answers, and ICE candidate signals to the other peer(s) in room
         if (currentRoom && rooms.has(currentRoom)) {
-          rooms.get(currentRoom).forEach((client) => {
+          const room = rooms.get(currentRoom);
+          room.participants.forEach((client) => {
             if (client !== ws && client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({ type: 'signal', payload }));
             }
@@ -441,14 +606,31 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (currentRoom && rooms.has(currentRoom)) {
-      const roomClients = rooms.get(currentRoom);
-      roomClients.delete(ws);
-      roomClients.forEach((client) => {
+      const room = rooms.get(currentRoom);
+      if (room.hostSocket === ws) {
+        room.hostSocket = null;
+        room.participants.forEach((client) => {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'host-left' }));
+          }
+        });
+      }
+      room.participants.delete(ws);
+      if (clientGuestId) {
+        room.waitingGuests.delete(clientGuestId);
+        if (room.hostSocket && room.hostSocket.readyState === WebSocket.OPEN) {
+          room.hostSocket.send(JSON.stringify({
+            type: 'guest-knock-cancelled',
+            guestId: clientGuestId,
+          }));
+        }
+      }
+      room.participants.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ type: 'peer-left' }));
         }
       });
-      if (roomClients.size === 0) {
+      if (room.participants.size === 0 && room.waitingGuests.size === 0) {
         rooms.delete(currentRoom);
       }
     }

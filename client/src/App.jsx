@@ -81,6 +81,33 @@ function App() {
     return false;
   });
 
+  // Public Meeting Portal State (?public=1 or ?portal=1)
+  const [isPublicPortal, setIsPublicPortal] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return Boolean(params.get('public')) || Boolean(params.get('portal'));
+    }
+    return false;
+  });
+  const [publicMeetings, setPublicMeetings] = useState([]);
+  const [isPublicLoading, setIsPublicLoading] = useState(false);
+  const [publicDirectRoomInput, setPublicDirectRoomInput] = useState('');
+
+  // Guest Waiting Room & Knocking State
+  const [guestName, setGuestName] = useState(() => {
+    return (typeof window !== 'undefined' && sessionStorage.getItem('pcs_guest_name')) || '';
+  });
+  const [guestOfficeId, setGuestOfficeId] = useState(() => {
+    return (typeof window !== 'undefined' && sessionStorage.getItem('pcs_guest_office_id')) || '';
+  });
+  const [guestKnockStatus, setGuestKnockStatus] = useState('idle'); // 'idle' | 'knocking' | 'admitted' | 'denied'
+  const [guestDeniedReason, setGuestDeniedReason] = useState('');
+  const [isHostOnlineInRoom, setIsHostOnlineInRoom] = useState(false);
+
+  // Host Admission & Knocking Queue State
+  const [pendingKnocks, setPendingKnocks] = useState([]);
+  const [isHostInCall, setIsHostInCall] = useState(false);
+
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const peerConnectionRef = useRef(null);
@@ -701,6 +728,7 @@ function App() {
       setActiveCallRoom(roomId);
       setIsCallConnected(false);
       setIsCallMinimized(false);
+      setIsHostInCall(isHost);
       setCallStatusText(isHost ? 'Room created! Waiting for guest to join...' : 'Joining room and connecting...');
 
       // Acquire camera & microphone
@@ -729,15 +757,35 @@ function App() {
       wsSignalingRef.current = ws;
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'join-room', roomId }));
-        showToast(`Entered PCS Room: ${roomId}`);
+        if (isHost) {
+          ws.send(JSON.stringify({ type: 'host-join', roomId }));
+          showToast(`Host started PCS Room: ${roomId}`);
+        } else {
+          ws.send(JSON.stringify({ type: 'join-room', roomId }));
+          showToast(`Entered PCS Room: ${roomId}`);
+        }
       };
 
       ws.onmessage = async (msgEvent) => {
         try {
           const data = JSON.parse(msgEvent.data);
 
-          if (data.type === 'peer-joined') {
+          if (data.type === 'guest-knock-request') {
+            const knockingGuest = data.guest;
+            setPendingKnocks((prev) => {
+              if (prev.some((k) => k.id === knockingGuest.id)) return prev;
+              return [...prev, { ...knockingGuest, roomId: data.roomId || roomId }];
+            });
+            showToast(`Guest ${knockingGuest.name} (${knockingGuest.officeId}) is knocking`);
+          } else if (data.type === 'guest-knock-cancelled') {
+            setPendingKnocks((prev) => prev.filter((k) => k.id !== data.guestId));
+          } else if (data.type === 'host-ready') {
+            if (data.waitingGuests && data.waitingGuests.length > 0) {
+              setPendingKnocks(data.waitingGuests.map((g) => ({ ...g, roomId })));
+            }
+          } else if (data.type === 'guest-admitted-ack') {
+            setPendingKnocks((prev) => prev.filter((k) => k.id !== data.guestId));
+          } else if (data.type === 'peer-joined') {
             showToast('Guest joined the call. Establishing connection...');
             setCallStatusText('Peer joined! Connecting WebRTC...');
             const pc = createPeerConnection(roomId);
@@ -928,6 +976,9 @@ function App() {
     setIsScreenSharing(false);
     setIsCallMinimized(false);
     setCallStatusText('');
+    setPendingKnocks([]);
+    setIsHostInCall(false);
+    setGuestKnockStatus('idle');
 
     if (window.location.search.includes('room=')) {
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -946,6 +997,240 @@ function App() {
       prompt('Copy guest call link:', guestUrl);
     }
   };
+
+  const handleGuestKnock = async (roomId) => {
+    if (!guestName.trim()) {
+      showToast('Please enter your full name');
+      return;
+    }
+    if (!guestOfficeId.trim()) {
+      showToast('Please enter your office ID');
+      return;
+    }
+
+    sessionStorage.setItem('pcs_guest_name', guestName.trim());
+    sessionStorage.setItem('pcs_guest_office_id', guestOfficeId.trim());
+
+    setGuestKnockStatus('knocking');
+    setGuestDeniedReason('');
+    setCallStatusText('Knocking on room... Waiting for host admission');
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const ws = new WebSocket(wsUrl);
+    wsSignalingRef.current = ws;
+
+    ws.onopen = () => {
+      ws.send(
+        JSON.stringify({
+          type: 'guest-knock',
+          roomId,
+          guest: {
+            name: guestName.trim(),
+            officeId: guestOfficeId.trim(),
+          },
+        })
+      );
+    };
+
+    ws.onmessage = async (msgEvent) => {
+      try {
+        const data = JSON.parse(msgEvent.data);
+
+        if (data.type === 'knock-status') {
+          setIsHostOnlineInRoom(Boolean(data.isHostOnline));
+        } else if (data.type === 'guest-admitted') {
+          showToast('Admitted by host! Connecting video call...');
+          setGuestKnockStatus('admitted');
+          setActiveCallRoom(roomId);
+          setCallStatusText('Host admitted you. Activating camera & connecting...');
+
+          let stream;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          } catch (mediaErr) {
+            console.warn('Camera/Mic permission failed or denied, trying audio only:', mediaErr);
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch (audioErr) {
+              console.warn('Audio only also failed:', audioErr);
+              stream = new MediaStream();
+            }
+          }
+
+          localStreamRef.current = stream;
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
+        } else if (data.type === 'guest-denied') {
+          setGuestKnockStatus('denied');
+          setGuestDeniedReason(data.reason || 'The meeting host declined admission for this session.');
+          showToast('Admission declined by host');
+        } else if (data.type === 'peer-joined') {
+          setCallStatusText('Connecting WebRTC...');
+          const pc = createPeerConnection(roomId);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          ws.send(
+            JSON.stringify({
+              type: 'signal',
+              roomId,
+              payload: { offer },
+            })
+          );
+        } else if (data.type === 'signal') {
+          const { payload } = data;
+          if (!payload) return;
+
+          if (payload.offer) {
+            const pc = peerConnectionRef.current || createPeerConnection(roomId);
+            await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
+
+            while (iceCandidatesQueue.current.length > 0) {
+              const candidate = iceCandidatesQueue.current.shift();
+              await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.warn);
+            }
+
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            ws.send(
+              JSON.stringify({
+                type: 'signal',
+                roomId,
+                payload: { answer },
+              })
+            );
+            setCallStatusText('Connecting to host...');
+          } else if (payload.answer) {
+            if (peerConnectionRef.current) {
+              await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.answer));
+              setIsCallConnected(true);
+              setCallStatusText('Connected with host');
+
+              while (iceCandidatesQueue.current.length > 0) {
+                const candidate = iceCandidatesQueue.current.shift();
+                await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.warn);
+              }
+            }
+          } else if (payload.candidate) {
+            if (peerConnectionRef.current && peerConnectionRef.current.remoteDescription) {
+              await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(console.warn);
+            } else {
+              iceCandidatesQueue.current.push(payload.candidate);
+            }
+          }
+        } else if (data.type === 'peer-left' || data.type === 'host-left') {
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = null;
+          }
+          setIsCallConnected(false);
+          setCallStatusText('Host left or ended the meeting.');
+          showToast('Host disconnected from call');
+        }
+      } catch (err) {
+        console.error('Guest signaling error:', err);
+      }
+    };
+
+    ws.onerror = () => {
+      showToast('Signaling connection interrupted');
+      setGuestKnockStatus('idle');
+    };
+  };
+
+  const handleCancelKnock = () => {
+    if (wsSignalingRef.current) {
+      try {
+        wsSignalingRef.current.close();
+      } catch (e) {}
+    }
+    setGuestKnockStatus('idle');
+    showToast('Knock cancelled');
+  };
+
+  const handleAdmitGuest = (guestId, knockRoomId) => {
+    if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN) {
+      wsSignalingRef.current.send(
+        JSON.stringify({
+          type: 'admit-guest',
+          roomId: knockRoomId || activeCallRoom,
+          guestId,
+        })
+      );
+      setPendingKnocks((prev) => prev.filter((k) => k.id !== guestId));
+      showToast('Guest admitted to meeting');
+    }
+  };
+
+  const handleDenyGuest = (guestId, knockRoomId) => {
+    if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN) {
+      wsSignalingRef.current.send(
+        JSON.stringify({
+          type: 'deny-guest',
+          roomId: knockRoomId || activeCallRoom,
+          guestId,
+        })
+      );
+      setPendingKnocks((prev) => prev.filter((k) => k.id !== guestId));
+      showToast('Guest denied entry');
+    }
+  };
+
+  const handleCopyPublicPortalLink = () => {
+    const origin = publicBaseUrl || window.location.origin;
+    const publicUrl = `${origin}?public=1`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(publicUrl);
+      showToast('Public Live Meeting portal link copied to clipboard');
+    } else {
+      prompt('Public Live Meeting Link:', publicUrl);
+    }
+  };
+
+  const handleDirectJoinFromPortal = (roomId) => {
+    setIsPublicPortal(false);
+    setIsGuestMode(true);
+    setActiveCallRoom(roomId);
+    window.history.pushState({}, document.title, `?room=${roomId}`);
+    fetch(`/api/public/room-status?room=${roomId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) setIsHostOnlineInRoom(Boolean(data.isLive));
+      })
+      .catch(() => {});
+  };
+
+  const handleDirectRoomCodeSubmit = (e) => {
+    e.preventDefault();
+    const cleanRoom = publicDirectRoomInput.trim().replace(/^\?room=/, '');
+    if (!cleanRoom) {
+      showToast('Please enter a room code');
+      return;
+    }
+    handleDirectJoinFromPortal(cleanRoom);
+  };
+
+  // Load public meetings when public portal is active
+  const fetchPublicMeetings = () => {
+    setIsPublicLoading(true);
+    fetch('/api/public/live-meetings')
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => {
+        setPublicMeetings(data || []);
+        setIsPublicLoading(false);
+      })
+      .catch((err) => {
+        console.warn('Failed to load public meetings:', err);
+        setIsPublicLoading(false);
+      });
+  };
+
+  useEffect(() => {
+    if (!isPublicPortal) return;
+    fetchPublicMeetings();
+    const interval = setInterval(fetchPublicMeetings, 5000);
+    return () => clearInterval(interval);
+  }, [isPublicPortal]);
 
   // Sync local stream with local video element when room or minimized state changes
   useEffect(() => {
@@ -975,10 +1260,30 @@ function App() {
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const roomParam = urlParams.get('room');
-    if (roomParam && !activeCallRoom) {
-      handleJoinCallRoom(roomParam, false);
+    if (roomParam) {
+      setActiveCallRoom(roomParam);
+      fetch(`/api/public/room-status?room=${roomParam}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data) setIsHostOnlineInRoom(Boolean(data.isLive));
+        })
+        .catch(() => {});
     }
   }, []);
+
+  // Poll room status while in guest lobby
+  useEffect(() => {
+    if (!isGuestMode || guestKnockStatus === 'admitted' || !activeCallRoom) return;
+    const interval = setInterval(() => {
+      fetch(`/api/public/room-status?room=${activeCallRoom}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data) setIsHostOnlineInRoom(Boolean(data.isLive));
+        })
+        .catch(() => {});
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [isGuestMode, guestKnockStatus, activeCallRoom]);
 
   // Cleanup WebRTC resources on unmount
   useEffect(() => {
@@ -1379,6 +1684,144 @@ function App() {
     return streak;
   })();
 
+  // Public Meeting Portal View (?public=1 or ?portal=1)
+  if (isPublicPortal) {
+    return (
+      <div className="public-portal-wrapper">
+        <header className="public-portal-header">
+          <div className="public-header-inner">
+            <div className="brand-group">
+              <span className="brand-logo-badge">PCS</span>
+              <div>
+                <h2 className="brand-title">Executive Meeting Portal</h2>
+                <span className="portal-sub">Public Live Directory & Direct Admission</span>
+              </div>
+            </div>
+            <div className="portal-header-actions">
+              <span className="portal-clock">
+                {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+              <button
+                type="button"
+                className="btn-switch-workspace"
+                onClick={() => {
+                  setIsPublicPortal(false);
+                  window.history.replaceState({}, document.title, window.location.pathname);
+                }}
+              >
+                <span className="material-symbols-outlined">dashboard</span>
+                <span>Workspace Dashboard</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="public-portal-stage">
+          <div className="public-portal-hero">
+            <div className="portal-hero-title-row">
+              <span className="material-symbols-outlined portal-hero-icon">live_tv</span>
+              <div>
+                <h1>Live Meeting Directory</h1>
+                <p>Verify live host status and join directly with your Full Name and Office ID.</p>
+              </div>
+            </div>
+
+            <form className="public-room-code-form" onSubmit={handleDirectRoomCodeSubmit}>
+              <div className="room-input-group">
+                <span className="material-symbols-outlined">key</span>
+                <input
+                  type="text"
+                  placeholder="Enter Room Code (e.g. pcs-room-101)..."
+                  value={publicDirectRoomInput}
+                  onChange={(e) => setPublicDirectRoomInput(e.target.value)}
+                />
+              </div>
+              <button type="submit" className="btn-direct-join">
+                <span>Join Directly</span>
+                <span className="material-symbols-outlined">login</span>
+              </button>
+            </form>
+          </div>
+
+          <div className="public-meetings-grid">
+            <div className="public-grid-header">
+              <h3>Today's Meetings</h3>
+              <span className="public-grid-counter">{publicMeetings.length} Scheduled</span>
+            </div>
+
+            {isPublicLoading && publicMeetings.length === 0 ? (
+              <div className="portal-empty-state">
+                <span className="material-symbols-outlined spin">refresh</span>
+                <p>Loading live meeting schedule...</p>
+              </div>
+            ) : publicMeetings.length === 0 ? (
+              <div className="portal-empty-state">
+                <span className="material-symbols-outlined">event_available</span>
+                <p>No public meetings scheduled for today.</p>
+                <button
+                  type="button"
+                  className="btn-create-instant-public"
+                  onClick={() => {
+                    const newRoom = `pcs-${Math.random().toString(36).substring(2, 9)}`;
+                    handleDirectJoinFromPortal(newRoom);
+                  }}
+                >
+                  <span className="material-symbols-outlined">add</span>
+                  <span>Start a New Instant Meeting</span>
+                </button>
+              </div>
+            ) : (
+              <div className="public-cards-list">
+                {publicMeetings.map((m) => (
+                  <div key={m.id} className={`public-meeting-card ${m.isLive ? 'is-live-card' : ''}`}>
+                    <div className="public-card-meta">
+                      {m.isLive ? (
+                        <div className="meeting-live-badge is-on">
+                          <span className="live-pulse-dot"></span>
+                          <span>MEETING IS ON</span>
+                        </div>
+                      ) : (
+                        <div className="meeting-live-badge scheduled">
+                          <span className="scheduled-dot"></span>
+                          <span>SCHEDULED</span>
+                        </div>
+                      )}
+                      <span className="public-meeting-time">
+                        <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>schedule</span>
+                        <span>{m.time}</span>
+                      </span>
+                    </div>
+
+                    <h4 className="public-meeting-title">{m.title}</h4>
+
+                    <div className="public-card-footer">
+                      <span className="public-room-code">Room: {m.roomId}</span>
+                      <button
+                        type="button"
+                        className={`btn-join-public-meeting ${m.isLive ? 'primary' : ''}`}
+                        onClick={() => handleDirectJoinFromPortal(m.roomId)}
+                      >
+                        <span className="material-symbols-outlined">videocam</span>
+                        <span>Join Directly</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </main>
+
+        {toastMessage && (
+          <div className="toast-notice">
+            <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
+            <span>{toastMessage}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Dedicated Guest Video Room (When external user joins via ?room=...)
   if (isGuestMode) {
     const currentRoom = activeCallRoom || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('room') : '');
@@ -1409,7 +1852,127 @@ function App() {
         </header>
 
         <main className="guest-stage">
-          {activeCallRoom ? (
+          {guestKnockStatus !== 'admitted' ? (
+            <div className="guest-lobby-container">
+              <div className="guest-lobby-card">
+                <div className="guest-lobby-status-banner">
+                  {isHostOnlineInRoom ? (
+                    <div className="meeting-live-badge is-on large">
+                      <span className="live-pulse-dot"></span>
+                      <span>MEETING IS ON — Host is in the Room</span>
+                    </div>
+                  ) : (
+                    <div className="meeting-live-badge scheduled large">
+                      <span className="scheduled-dot"></span>
+                      <span>Waiting for Host to Start Meeting</span>
+                    </div>
+                  )}
+                </div>
+
+                {guestKnockStatus === 'idle' && (
+                  <div className="guest-checkin-flow">
+                    <div className="guest-checkin-header">
+                      <span className="material-symbols-outlined guest-badge-icon">badge</span>
+                      <div>
+                        <h3>Direct Meeting Check-In</h3>
+                        <p>Provide your credentials. The host will verify your name and Office ID before admitting you.</p>
+                      </div>
+                    </div>
+
+                    <div className="guest-form-group">
+                      <label htmlFor="guest-full-name">Full Name <span className="required">*</span></label>
+                      <input
+                        id="guest-full-name"
+                        type="text"
+                        placeholder="e.g. Sarah Connor"
+                        value={guestName}
+                        onChange={(e) => setGuestName(e.target.value)}
+                        autoFocus
+                      />
+                    </div>
+
+                    <div className="guest-form-group">
+                      <label htmlFor="guest-office-id">Office ID / Employee ID <span className="required">*</span></label>
+                      <input
+                        id="guest-office-id"
+                        type="text"
+                        placeholder="e.g. PCS-ENG-402"
+                        value={guestOfficeId}
+                        onChange={(e) => setGuestOfficeId(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="guest-checkin-actions">
+                      <button
+                        type="button"
+                        className="btn-knock-join"
+                        onClick={() => handleGuestKnock(currentRoom)}
+                      >
+                        <span className="material-symbols-outlined">meeting_room</span>
+                        <span>Knock & Join Directly</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {guestKnockStatus === 'knocking' && (
+                  <div className="guest-knocking-flow">
+                    <div className="radar-spinner"></div>
+                    <h3>Knock Request Sent to Host</h3>
+                    <p>The meeting host is verifying your Office ID and name.</p>
+
+                    <div className="guest-credential-summary">
+                      <div className="summary-field">
+                        <span className="summary-label">Name:</span>
+                        <strong className="summary-val">{guestName}</strong>
+                      </div>
+                      <div className="summary-field">
+                        <span className="summary-label">Office ID:</span>
+                        <strong className="summary-val monospace">{guestOfficeId}</strong>
+                      </div>
+                      <div className="summary-field">
+                        <span className="summary-label">Room:</span>
+                        <strong className="summary-val monospace">{currentRoom}</strong>
+                      </div>
+                    </div>
+
+                    <div className="knocking-status-note">
+                      {isHostOnlineInRoom ? (
+                        <span>Host is currently in the room and reviewing join requests.</span>
+                      ) : (
+                        <span>Host has not joined yet. You will be prompted as soon as they enter.</span>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn-cancel-knock"
+                      onClick={handleCancelKnock}
+                    >
+                      <span className="material-symbols-outlined">close</span>
+                      <span>Cancel Join Request</span>
+                    </button>
+                  </div>
+                )}
+
+                {guestKnockStatus === 'denied' && (
+                  <div className="guest-denied-flow">
+                    <span className="material-symbols-outlined denied-icon">gpp_bad</span>
+                    <h3>Admission Declined</h3>
+                    <p>{guestDeniedReason || 'The host declined entry for this meeting session.'}</p>
+                    <button
+                      type="button"
+                      className="btn-retry-knock"
+                      onClick={() => setGuestKnockStatus('idle')}
+                    >
+                      <span className="material-symbols-outlined">replay</span>
+                      <span>Try Again with Different Details</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : activeCallRoom ? (
             <div className="guest-video-grid">
               {/* Remote Video Container */}
               <div className="guest-video-box remote">
@@ -1476,7 +2039,7 @@ function App() {
           )}
         </main>
 
-        {activeCallRoom && (
+        {activeCallRoom && guestKnockStatus === 'admitted' && (
           <footer className="guest-controls-bar">
             <button
               type="button"
@@ -1524,6 +2087,54 @@ function App() {
               <span>Leave</span>
             </button>
           </footer>
+        )}
+
+        {/* Floating Host Admission Dialog for Knocking Guests (if host is in guest view) */}
+        {pendingKnocks.length > 0 && (
+          <div className="host-knock-modal-overlay">
+            <div className="host-knock-card">
+              <div className="host-knock-header">
+                <span className="material-symbols-outlined knock-bell-icon">badge</span>
+                <div>
+                  <h3>Guest Requesting Admission ({pendingKnocks.length})</h3>
+                  <p>Verify Office ID and Full Name before admitting</p>
+                </div>
+              </div>
+              <div className="host-knock-body">
+                {pendingKnocks.map((k) => (
+                  <div key={k.id} className="knock-item-row">
+                    <div className="knock-guest-info">
+                      <div className="knock-guest-name-row">
+                        <span className="knock-guest-name">{k.name}</span>
+                        <span className="knock-office-badge">ID: {k.officeId}</span>
+                      </div>
+                      <span className="knock-room-tag">Room: {k.roomId}</span>
+                    </div>
+                    <div className="knock-actions">
+                      <button
+                        type="button"
+                        className="btn-admit-guest"
+                        onClick={() => handleAdmitGuest(k.id, k.roomId)}
+                        title="Admit guest into meeting"
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>how_to_reg</span>
+                        <span>Admit</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-deny-guest"
+                        onClick={() => handleDenyGuest(k.id, k.roomId)}
+                        title="Decline guest admission"
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>block</span>
+                        <span>Decline</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         )}
 
         {toastMessage && (
@@ -1616,6 +2227,16 @@ function App() {
             >
               <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>content_paste</span>
               <span>Standup</span>
+            </button>
+            <div className="strip-divider"></div>
+            <button
+              type="button"
+              className="utility-strip-btn"
+              onClick={handleCopyPublicPortalLink}
+              title="Copy public live meeting portal link to share with guests and team"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>public</span>
+              <span>Public Link</span>
             </button>
             <div className="strip-divider"></div>
             <button
@@ -2958,6 +3579,54 @@ function App() {
           <span>Standup</span>
         </button>
       </nav>
+
+      {/* Floating Host Admission Dialog for Knocking Guests */}
+      {pendingKnocks.length > 0 && (
+        <div className="host-knock-modal-overlay">
+          <div className="host-knock-card">
+            <div className="host-knock-header">
+              <span className="material-symbols-outlined knock-bell-icon">badge</span>
+              <div>
+                <h3>Guest Requesting Admission ({pendingKnocks.length})</h3>
+                <p>Verify Office ID and Full Name before admitting</p>
+              </div>
+            </div>
+            <div className="host-knock-body">
+              {pendingKnocks.map((k) => (
+                <div key={k.id} className="knock-item-row">
+                  <div className="knock-guest-info">
+                    <div className="knock-guest-name-row">
+                      <span className="knock-guest-name">{k.name}</span>
+                      <span className="knock-office-badge">ID: {k.officeId}</span>
+                    </div>
+                    <span className="knock-room-tag">Room: {k.roomId}</span>
+                  </div>
+                  <div className="knock-actions">
+                    <button
+                      type="button"
+                      className="btn-admit-guest"
+                      onClick={() => handleAdmitGuest(k.id, k.roomId)}
+                      title="Admit guest into meeting"
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>how_to_reg</span>
+                      <span>Admit</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-deny-guest"
+                      onClick={() => handleDenyGuest(k.id, k.roomId)}
+                      title="Decline guest admission"
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>block</span>
+                      <span>Decline</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast Alert */}
       {toastMessage && (
