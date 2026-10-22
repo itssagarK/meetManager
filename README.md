@@ -26,20 +26,41 @@ Share the generated HTTPS URL (`https://<subdomain>.loca.lt?room=pcs-xxx`) with 
 
 ---
 
-## Chrome Extension Setup (Side Panel V3)
+## Chrome Extension Pack (Manifest V3 Side Panel)
 
-PCS Meet Manager runs natively docked in Chrome's **Side Panel API** (`chrome.sidePanel`) alongside Google Meet, Gmail, Jira, and Docs without switching windows.
+PCS Meet Manager includes a pre-compiled, store-ready extension pack: **`pcs-meet-manager-extension.zip`** (92 KB) located in the project root. It docks natively in Chrome's **Side Panel API** (`chrome.sidePanel`), allowing you to manage tasks and join WebRTC calls alongside Google Meet, Gmail, Jira, and Docs without switching windows.
 
+### What is Inside the Extension Pack
+* `manifest.json`: Manifest V3 configuration with side panel permissions.
+* `background.js`: Background service worker managing pre-meeting alarms (`chrome.alarms`) and system notifications (`chrome.notifications`).
+* `icon-16.png`, `icon-48.png`, `icon-128.png`: Chrome Web Store compliant icons.
+* `dist/index.html` & assets: Optimized production React 19 side panel bundle.
+
+---
+
+### Installation Options
+
+#### Option A: Install from Pre-Built Pack
+1. Extract `pcs-meet-manager-extension.zip` into a folder.
+2. Open Chrome (or Edge) and go to `chrome://extensions`.
+3. Enable **Developer mode** (top-right toggle).
+4. Click **Load unpacked** and select the extracted folder (or `client/dist`).
+5. Pin **PCS Meet Manager** to your toolbar and click the icon to launch the side panel.
+
+#### Option B: Build & Repackage from Source
+To regenerate the extension bundle and ZIP archive after making any code changes:
 ```bash
-# Build & package store-ready release zip in one step
 npm run package:extension
 ```
+This automatically compiles the frontend with Vite and generates a fresh `pcs-meet-manager-extension.zip`.
 
-1. Open Chrome and navigate to `chrome://extensions`.
-2. Toggle **Developer mode** in the top right to **ON**.
-3. Click **Load unpacked** and select the `client/dist` directory.
-4. Pin the extension to your toolbar and click the icon to open the persistent side panel.
-5. The generated `pcs-meet-manager-extension.zip` is ready for direct submission to the Chrome Web Store.
+---
+
+### Publishing to Chrome Web Store
+The generated `pcs-meet-manager-extension.zip` meets all Chrome Web Store requirements:
+1. Log in to the [Chrome Developer Dashboard](https://chrome.google.com/webstore/devconsole).
+2. Click **New Item** and upload `pcs-meet-manager-extension.zip`.
+3. Fill in description details and submit for review.
 
 ---
 
