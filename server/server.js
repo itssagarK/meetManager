@@ -40,7 +40,7 @@ app.use(
 );
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '15mb' }));
 
 // Rate Limiting: 200 requests per 15 minutes per IP for general API
 const apiLimiter = rateLimit({
@@ -107,6 +107,23 @@ try {
 
 try {
   db.exec("ALTER TABLE meetings ADD COLUMN workspace_id TEXT DEFAULT 'default'");
+} catch (e) {}
+
+// Room messages schema for global online chat, images, and work links
+db.exec(`
+  CREATE TABLE IF NOT EXISTS room_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    sender_id TEXT,
+    content TEXT,
+    attachment_url TEXT,
+    attachment_type TEXT DEFAULT 'text',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+try {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_room_messages_room ON room_messages(room_id)');
 } catch (e) {}
 
 // Clean up any Saturday Townhall meetings scheduled on non-Saturdays
@@ -465,6 +482,22 @@ app.get('/api/public/room-status', (req, res) => {
   });
 });
 
+// Global Online Chat: Fetch room message history (text, links, images)
+app.get('/api/rooms/:roomId/messages', (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const messages = db.prepare(`
+      SELECT * FROM room_messages
+      WHERE room_id = ?
+      ORDER BY id ASC
+      LIMIT 300
+    `).all(roomId);
+    res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Production static assets
 if (isProduction) {
   const clientDist = path.join(__dirname, '../client/dist');
@@ -595,6 +628,37 @@ wss.on('connection', (ws) => {
           room.participants.forEach((client) => {
             if (client !== ws && client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({ type: 'signal', payload }));
+            }
+          });
+        }
+      } else if (type === 'chat-message') {
+        const { message: chatMsg } = data;
+        if (!chatMsg || !currentRoom) return;
+
+        const stmt = db.prepare(`
+          INSERT INTO room_messages (room_id, sender_name, sender_id, content, attachment_url, attachment_type)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        const result = stmt.run(
+          currentRoom,
+          (chatMsg.senderName || 'Anonymous').trim(),
+          chatMsg.senderId || 'user',
+          chatMsg.content || '',
+          chatMsg.attachmentUrl || null,
+          chatMsg.attachmentType || 'text'
+        );
+
+        const savedMsg = db.prepare('SELECT * FROM room_messages WHERE id = ?').get(result.lastInsertRowid);
+
+        if (rooms.has(currentRoom)) {
+          const room = rooms.get(currentRoom);
+          room.participants.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'chat-message',
+                roomId: currentRoom,
+                message: savedMsg,
+              }));
             }
           });
         }
