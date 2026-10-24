@@ -487,14 +487,58 @@ app.get('/api/public/room-status', (req, res) => {
 // Global Online Chat: Fetch room message history (text, links, images)
 app.get('/api/rooms/:roomId/messages', (req, res) => {
   try {
-    const { roomId } = req.params;
+    const roomId = (req.params.roomId || 'general').trim().toLowerCase();
     const messages = db.prepare(`
       SELECT * FROM room_messages
-      WHERE room_id = ?
+      WHERE LOWER(room_id) = LOWER(?)
       ORDER BY id ASC
       LIMIT 300
     `).all(roomId);
     res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Global Online Chat: Post message fallback endpoint
+app.post('/api/rooms/:roomId/messages', (req, res) => {
+  try {
+    const targetRoom = (req.params.roomId || 'general').trim().toLowerCase();
+    const { senderName, senderId, content, attachmentUrl, attachmentType } = req.body || {};
+    if (!content && !attachmentUrl) {
+      return res.status(400).json({ error: 'Message content or attachment is required.' });
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO room_messages (room_id, sender_name, sender_id, content, attachment_url, attachment_type)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      targetRoom,
+      (senderName || 'Anonymous').trim(),
+      senderId || 'user',
+      content || '',
+      attachmentUrl || null,
+      attachmentType || 'text'
+    );
+
+    const savedMsg = db.prepare('SELECT * FROM room_messages WHERE id = ?').get(result.lastInsertRowid);
+
+    const broadcastPayload = JSON.stringify({
+      type: 'chat-message',
+      roomId: targetRoom,
+      message: savedMsg,
+    });
+
+    if (chatRooms.has(targetRoom)) {
+      chatRooms.get(targetRoom).forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(broadcastPayload);
+        }
+      });
+    }
+
+    res.json(savedMsg);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -647,9 +691,15 @@ wss.on('connection', (ws) => {
           });
         }
       } else if (type === 'chat-message') {
-        const targetRoom = roomId || currentChatRoom;
+        const targetRoom = (roomId || currentChatRoom || 'general').trim().toLowerCase();
         const { message: chatMsg } = data;
         if (!chatMsg || !targetRoom) return;
+
+        currentChatRoom = targetRoom;
+        if (!chatRooms.has(targetRoom)) {
+          chatRooms.set(targetRoom, new Set());
+        }
+        chatRooms.get(targetRoom).add(ws);
 
         const stmt = db.prepare(`
           INSERT INTO room_messages (room_id, sender_name, sender_id, content, attachment_url, attachment_type)
@@ -666,25 +716,23 @@ wss.on('connection', (ws) => {
 
         const savedMsg = db.prepare('SELECT * FROM room_messages WHERE id = ?').get(result.lastInsertRowid);
 
+        const broadcastPayload = JSON.stringify({
+          type: 'chat-message',
+          roomId: targetRoom,
+          message: savedMsg,
+        });
+
         if (chatRooms.has(targetRoom)) {
           chatRooms.get(targetRoom).forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'chat-message',
-                roomId: targetRoom,
-                message: savedMsg,
-              }));
+              client.send(broadcastPayload);
             }
           });
         }
         if (rooms.has(targetRoom)) {
           rooms.get(targetRoom).participants.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'chat-message',
-                roomId: targetRoom,
-                message: savedMsg,
-              }));
+              client.send(broadcastPayload);
             }
           });
         }

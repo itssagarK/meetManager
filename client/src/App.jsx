@@ -1285,7 +1285,7 @@ function App() {
     if (!chatInputText.trim() && !chatAttachment) return;
     const targetRoom = (
       overrideRoom ||
-      (isGlobalChatMode ? activeChatRoom : (activeCallRoom || 'general'))
+      (isGlobalChatMode ? activeChatRoom : (activeCallRoom || activeChatRoom || 'general'))
     ).trim().toLowerCase();
 
     if (!targetRoom) {
@@ -1305,6 +1305,46 @@ function App() {
       attachmentType,
     };
 
+    // Optimistic UI update: immediately display in message list
+    const tempId = 'temp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6);
+    const optimisticMsg = {
+      id: tempId,
+      room_id: targetRoom,
+      sender_name: sender,
+      sender_id: msgPayload.senderId,
+      content: msgPayload.content,
+      attachment_url: msgPayload.attachmentUrl,
+      attachment_type: msgPayload.attachmentType,
+      created_at: new Date().toISOString(),
+    };
+    setChatMessages((prev) => [...prev, optimisticMsg]);
+
+    // Guaranteed persistence via REST endpoint
+    fetch(`/api/rooms/${encodeURIComponent(targetRoom)}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(msgPayload),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((saved) => {
+        if (saved) {
+          setChatMessages((prev) => {
+            if (prev.some((m) => m.id === saved.id)) {
+              return prev.filter((m) => m.id !== tempId);
+            }
+            const idx = prev.findIndex((m) => m.id === tempId);
+            if (idx !== -1) {
+              const next = [...prev];
+              next[idx] = saved;
+              return next;
+            }
+            return [...prev, saved];
+          });
+        }
+      })
+      .catch((err) => console.warn('REST message post warning:', err));
+
+    // Real-time broadcast via WebSocket
     if (chatWsRef.current && chatWsRef.current.readyState === WebSocket.OPEN) {
       chatWsRef.current.send(
         JSON.stringify({
@@ -1336,7 +1376,17 @@ function App() {
           const data = JSON.parse(msgEvent.data);
           if (data.type === 'chat-message' && data.message) {
             setChatMessages((prev) => {
-              if (prev.some((m) => m.id === data.message.id)) return prev;
+              if (prev.some((m) => m.id === data.message.id)) {
+                return prev.filter((m) => m.id !== tempId);
+              }
+              const idx = prev.findIndex(
+                (m) => m.id === tempId || (String(m.id).startsWith('temp-') && m.content === data.message.content)
+              );
+              if (idx !== -1) {
+                const next = [...prev];
+                next[idx] = data.message;
+                return next;
+              }
               return [...prev, data.message];
             });
           }
@@ -1434,7 +1484,9 @@ function App() {
   };
 
   const handleOpenGlobalChat = () => {
-    setIsCreateRoomModalOpen(true);
+    const room = activeCallRoom || activeChatRoom || 'general';
+    setIsRoomChatOpen((prev) => !prev);
+    handleLoadRoomMessages(room);
   };
 
   const handleConnectGlobalChat = (roomCode) => {
@@ -4640,140 +4692,147 @@ function App() {
       </nav>
 
       {/* Floating / Docked Global Online Work Chat & Image Sharing Room */}
-      {isRoomChatOpen && activeCallRoom && (
+      {isRoomChatOpen && (
         <div className="room-chat-floating-dock">
-          <div className="room-chat-header">
-            <div className="room-chat-title-group">
-              <span className="live-chat-dot"></span>
-              <span className="room-chat-name">Room: <strong>{activeCallRoom}</strong></span>
-              <span className="room-chat-count">{chatMessages.length} msgs</span>
-            </div>
-            <div className="room-chat-header-actions">
-              <button
-                type="button"
-                className="chat-hdr-btn"
-                onClick={() => handleCopyRoomShareLink(activeCallRoom)}
-                title="Copy Room Link to Invite Others"
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>link</span>
-                <span>Copy Link</span>
-              </button>
-              {!activeCallRoom.startsWith('call-') && !isHostInCall && !isCallConnected && (
-                <button
-                  type="button"
-                  className="chat-hdr-btn highlight-video"
-                  onClick={() => handleJoinCallRoom(activeCallRoom, true)}
-                  title="Start Instant Video Call in this Room"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>videocam</span>
-                  <span>Video Call</span>
-                </button>
-              )}
-              <button
-                type="button"
-                className="chat-hdr-btn close-chat-btn"
-                onClick={() => setIsRoomChatOpen(false)}
-                title="Close Chat"
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="room-chat-messages-scroll">
-            {chatMessages.length === 0 ? (
-              <div className="chat-empty-slate">
-                <span className="material-symbols-outlined chat-empty-icon">forum</span>
-                <p>Welcome to <strong>{activeCallRoom}</strong></p>
-                <span>Anyone with this room code can join from any device. Start by sending a message, sharing a link, or dropping an image.</span>
-                <button
-                  type="button"
-                  className="btn-copy-room-first"
-                  onClick={() => handleCopyRoomShareLink(activeCallRoom)}
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>content_copy</span>
-                  <span>Copy Room Code to Invite Team</span>
-                </button>
-              </div>
-            ) : (
-              chatMessages.map((m) => {
-                const isSelf = m.sender_name === (guestName.trim() || 'Team Member');
-                const timeStr = m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-                return (
-                  <div key={m.id || Math.random()} className={`chat-bubble-row ${isSelf ? 'self' : 'peer'}`}>
-                    <div className="chat-bubble">
-                      <div className="chat-bubble-meta">
-                        <span className="chat-sender-name">{m.sender_name}</span>
-                        <span className="chat-timestamp">{timeStr}</span>
-                      </div>
-                      <div className="chat-bubble-content">
-                        {renderMessageContent(m)}
-                      </div>
-                    </div>
+          {(() => {
+            const currentDockRoom = (activeCallRoom || activeChatRoom || 'general').trim().toLowerCase();
+            return (
+              <>
+                <div className="room-chat-header">
+                  <div className="room-chat-title-group">
+                    <span className="live-chat-dot"></span>
+                    <span className="room-chat-name">Room: <strong>#{currentDockRoom}</strong></span>
+                    <span className="room-chat-count">{chatMessages.length} msgs</span>
                   </div>
-                );
-              })
-            )}
-            <div ref={chatMessagesEndRef} />
-          </div>
+                  <div className="room-chat-header-actions">
+                    <button
+                      type="button"
+                      className="chat-hdr-btn"
+                      onClick={() => handleCopyChatShareLink(currentDockRoom)}
+                      title="Copy Shareable Chat Room Link"
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>share</span>
+                      <span>Share</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-hdr-btn highlight-video"
+                      onClick={() => handleConnectGlobalChat(currentDockRoom)}
+                      title="Open Dedicated Full-Screen Chat"
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>open_in_full</span>
+                      <span>Full View</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-hdr-btn close-chat-btn"
+                      onClick={() => setIsRoomChatOpen(false)}
+                      title="Close Chat"
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
+                    </button>
+                  </div>
+                </div>
 
-          <div className="room-chat-composer">
-            {chatAttachment && (
-              <div className="chat-attachment-preview">
-                <img src={chatAttachment.url} alt="Attachment Preview" className="preview-thumb" />
-                <span className="preview-filename">{chatAttachment.name}</span>
-                <button
-                  type="button"
-                  className="btn-remove-attachment"
-                  onClick={() => setChatAttachment(null)}
-                  title="Remove image attachment"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
-                </button>
-              </div>
-            )}
+                <div className="room-chat-messages-scroll">
+                  {chatMessages.length === 0 ? (
+                    <div className="chat-empty-slate">
+                      <span className="material-symbols-outlined chat-empty-icon">forum</span>
+                      <p>Welcome to <strong>#{currentDockRoom}</strong></p>
+                      <span>Anyone with this room code can join from any device. Start by sending a message, sharing a link, or dropping an image.</span>
+                      <button
+                        type="button"
+                        className="btn-copy-room-first"
+                        onClick={() => handleCopyChatShareLink(currentDockRoom)}
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>content_copy</span>
+                        <span>Copy Room Link to Invite Team</span>
+                      </button>
+                    </div>
+                  ) : (
+                    chatMessages.map((m) => {
+                      const isSelf =
+                        m.sender_name === (guestName.trim() || 'Colleague') ||
+                        m.sender_id === (sessionStorage.getItem('pcs_guest_office_id') || sessionStorage.getItem('pcs_user_id'));
+                      const timeStr = m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+                      return (
+                        <div key={m.id || Math.random()} className={`chat-bubble-row ${isSelf ? 'self' : 'peer'}`}>
+                          <div className="chat-bubble">
+                            <div className="chat-bubble-meta">
+                              <span className="chat-sender-name">{m.sender_name}</span>
+                              <span className="chat-timestamp">{timeStr}</span>
+                            </div>
+                            <div className="chat-bubble-content">
+                              {renderMessageContent(m)}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                  <div ref={chatMessagesEndRef} />
+                </div>
 
-            <div className="chat-composer-input-row">
-              <input
-                type="file"
-                ref={chatFileInputRef}
-                accept="image/*"
-                style={{ display: 'none' }}
-                onChange={handleImageSelect}
-              />
-              <button
-                type="button"
-                className="btn-attach-image"
-                onClick={() => chatFileInputRef.current?.click()}
-                title="Attach photo or image"
-              >
-                <span className="material-symbols-outlined">image</span>
-              </button>
-              <textarea
-                className="chat-text-input"
-                placeholder="Type a message, paste image, or drop work link..."
-                rows="1"
-                value={chatInputText}
-                onChange={(e) => setChatInputText(e.target.value)}
-                onPaste={handlePasteEvent}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendChatMessage();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="btn-chat-send"
-                onClick={handleSendChatMessage}
-                disabled={!chatInputText.trim() && !chatAttachment}
-                title="Send Message"
-              >
-                <span className="material-symbols-outlined">send</span>
-              </button>
-            </div>
-          </div>
+                <div className="room-chat-composer">
+                  {chatAttachment && (
+                    <div className="chat-attachment-preview">
+                      <img src={chatAttachment.url} alt="Attachment Preview" className="preview-thumb" />
+                      <span className="preview-filename">{chatAttachment.name}</span>
+                      <button
+                        type="button"
+                        className="btn-remove-attachment"
+                        onClick={() => setChatAttachment(null)}
+                        title="Remove image attachment"
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="chat-composer-input-row">
+                    <input
+                      type="file"
+                      ref={chatFileInputRef}
+                      accept="image/*"
+                      style={{ display: 'none' }}
+                      onChange={handleImageSelect}
+                    />
+                    <button
+                      type="button"
+                      className="btn-attach-image"
+                      onClick={() => chatFileInputRef.current?.click()}
+                      title="Attach photo or image"
+                    >
+                      <span className="material-symbols-outlined">image</span>
+                    </button>
+                    <textarea
+                      className="chat-text-input"
+                      placeholder="Type a message, paste image, or drop work link..."
+                      rows="1"
+                      value={chatInputText}
+                      onChange={(e) => setChatInputText(e.target.value)}
+                      onPaste={handlePasteEvent}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSendChatMessage(currentDockRoom);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn-chat-send"
+                      onClick={() => handleSendChatMessage(currentDockRoom)}
+                      disabled={!chatInputText.trim() && !chatAttachment}
+                      title="Send Message"
+                    >
+                      <span className="material-symbols-outlined">send</span>
+                    </button>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
