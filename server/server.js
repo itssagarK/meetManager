@@ -568,16 +568,20 @@ wss.on('connection', (ws) => {
       const { type, roomId, payload, guest, guestId, reason } = data;
 
       if (type === 'chat-join') {
-        currentChatRoom = roomId;
-        if (!chatRooms.has(roomId)) {
-          chatRooms.set(roomId, new Set());
+        const normalizedRoom = (roomId || 'general').trim().toLowerCase();
+        if (currentChatRoom && currentChatRoom !== normalizedRoom && chatRooms.has(currentChatRoom)) {
+          chatRooms.get(currentChatRoom).delete(ws);
         }
-        chatRooms.get(roomId).add(ws);
+        currentChatRoom = normalizedRoom;
+        if (!chatRooms.has(normalizedRoom)) {
+          chatRooms.set(normalizedRoom, new Set());
+        }
+        chatRooms.get(normalizedRoom).add(ws);
 
         ws.send(JSON.stringify({
           type: 'chat-joined',
-          roomId,
-          activeUsers: chatRooms.get(roomId).size,
+          roomId: normalizedRoom,
+          activeUsers: chatRooms.get(normalizedRoom).size,
         }));
       } else if (type === 'host-join') {
         currentRoom = roomId;
@@ -743,12 +747,12 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (currentChatRoom && chatRooms.has(currentChatRoom)) {
-      chatRooms.get(currentChatRoom).delete(ws);
-      if (chatRooms.get(currentChatRoom).size === 0) {
-        chatRooms.delete(currentChatRoom);
+    chatRooms.forEach((clientSet, rId) => {
+      clientSet.delete(ws);
+      if (clientSet.size === 0) {
+        chatRooms.delete(rId);
       }
-    }
+    });
 
     if (currentRoom && rooms.has(currentRoom)) {
       const room = rooms.get(currentRoom);

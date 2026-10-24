@@ -1498,34 +1498,13 @@ function App() {
     handleLoadRoomMessages(code);
 
     if (chatWsRef.current && chatWsRef.current.readyState === WebSocket.OPEN) {
-      chatWsRef.current.close();
-    }
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    const ws = new WebSocket(wsUrl);
-    chatWsRef.current = ws;
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
+      chatWsRef.current.send(JSON.stringify({
         type: 'chat-join',
         roomId: code,
         senderName: guestName.trim() || 'Colleague',
       }));
-      showToast(`Connected to Work Chat: #${code}`);
-    };
-
-    ws.onmessage = (msgEvent) => {
-      try {
-        const data = JSON.parse(msgEvent.data);
-        if (data.type === 'chat-message' && data.message) {
-          setChatMessages((prev) => {
-            if (prev.some((m) => m.id === data.message.id)) return prev;
-            return [...prev, data.message];
-          });
-        }
-      } catch (e) {}
-    };
+    }
+    showToast(`Connected to Work Chat: #${code}`);
   };
 
   const handleCreateNewRoom = (customCode = null) => {
@@ -1564,43 +1543,107 @@ function App() {
     }
   };
 
-  // Auto-connect and load messages when in Global Chat Mode
+  // Persistent Global Chat WebSocket Connection for Real-Time Sync across all devices
   useEffect(() => {
-    if (!isGlobalChatMode) return;
-    const code = activeChatRoom || 'general';
-    handleLoadRoomMessages(code);
+    let ws = null;
+    let reconnectTimer = null;
+    let isMounted = true;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    const ws = new WebSocket(wsUrl);
-    chatWsRef.current = ws;
+    const setupChatWs = () => {
+      if (!isMounted) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      ws = new WebSocket(wsUrl);
+      chatWsRef.current = ws;
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: 'chat-join',
-        roomId: code,
-        senderName: guestName.trim() || 'Colleague',
-      }));
-    };
+      const currentRoom = (isGlobalChatMode ? activeChatRoom : (activeCallRoom || activeChatRoom || 'general')).trim().toLowerCase();
 
-    ws.onmessage = (msgEvent) => {
-      try {
-        const data = JSON.parse(msgEvent.data);
-        if (data.type === 'chat-message' && data.message) {
-          setChatMessages((prev) => {
-            if (prev.some((m) => m.id === data.message.id)) return prev;
-            return [...prev, data.message];
-          });
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          type: 'chat-join',
+          roomId: currentRoom,
+          senderName: guestName.trim() || 'Colleague',
+        }));
+      };
+
+      ws.onmessage = (msgEvent) => {
+        try {
+          const data = JSON.parse(msgEvent.data);
+          if (data.type === 'chat-message' && data.message) {
+            setChatMessages((prev) => {
+              if (prev.some((m) => m.id === data.message.id)) return prev;
+              const idx = prev.findIndex(
+                (m) => String(m.id).startsWith('temp-') && m.content === data.message.content
+              );
+              if (idx !== -1) {
+                const next = [...prev];
+                next[idx] = data.message;
+                return next;
+              }
+              return [...prev, data.message];
+            });
+          }
+        } catch (e) {}
+      };
+
+      ws.onclose = () => {
+        if (isMounted) {
+          reconnectTimer = setTimeout(setupChatWs, 2000);
         }
-      } catch (e) {}
+      };
+
+      ws.onerror = () => {
+        if (ws) ws.close();
+      };
     };
+
+    setupChatWs();
 
     return () => {
-      if (ws.readyState === WebSocket.OPEN) {
+      isMounted = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.close();
       }
     };
-  }, [isGlobalChatMode, activeChatRoom]);
+  }, []);
+
+  // Sync room subscription & initial message fetch whenever room or chat mode changes
+  useEffect(() => {
+    const currentRoom = (isGlobalChatMode ? activeChatRoom : (activeCallRoom || activeChatRoom || 'general')).trim().toLowerCase();
+    handleLoadRoomMessages(currentRoom);
+
+    if (chatWsRef.current && chatWsRef.current.readyState === WebSocket.OPEN) {
+      chatWsRef.current.send(JSON.stringify({
+        type: 'chat-join',
+        roomId: currentRoom,
+        senderName: guestName.trim() || 'Colleague',
+      }));
+    }
+  }, [isGlobalChatMode, activeChatRoom, activeCallRoom]);
+
+  // Periodic polling fallback for 100% reliable global synchronization across mobile networks
+  useEffect(() => {
+    const currentRoom = (isGlobalChatMode ? activeChatRoom : (activeCallRoom || activeChatRoom || 'general')).trim().toLowerCase();
+    const syncInterval = setInterval(() => {
+      fetch(`/api/rooms/${encodeURIComponent(currentRoom)}/messages`)
+        .then((res) => (res.ok ? res.json() : []))
+        .then((latest) => {
+          if (Array.isArray(latest) && latest.length > 0) {
+            setChatMessages((prev) => {
+              if (prev.length === latest.length && prev.length > 0 && prev[prev.length - 1].id === latest[latest.length - 1].id) {
+                return prev;
+              }
+              const pendingTemps = prev.filter((m) => String(m.id).startsWith('temp-') && !latest.some((lm) => lm.content === m.content));
+              return [...latest, ...pendingTemps];
+            });
+          }
+        })
+        .catch(() => {});
+    }, 3000);
+
+    return () => clearInterval(syncInterval);
+  }, [isGlobalChatMode, activeChatRoom, activeCallRoom]);
 
   // Load chat messages whenever activeCallRoom changes
   useEffect(() => {
