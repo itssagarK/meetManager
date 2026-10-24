@@ -408,6 +408,8 @@ app.delete('/api/meetings/:id', (req, res) => {
 
 // Rooms map to track live active rooms, host sockets, and knocking waiting queues
 const rooms = new Map();
+// Dedicated Map for Global Chat Clients (completely separate from video calling rooms)
+const chatRooms = new Map();
 
 // Helper to get or create room state
 const getOrCreateRoom = (roomId) => {
@@ -512,6 +514,7 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 
 wss.on('connection', (ws) => {
   let currentRoom = null;
+  let currentChatRoom = null;
   let isHostRole = false;
   let clientGuestId = null;
 
@@ -520,7 +523,19 @@ wss.on('connection', (ws) => {
       const data = JSON.parse(message);
       const { type, roomId, payload, guest, guestId, reason } = data;
 
-      if (type === 'host-join') {
+      if (type === 'chat-join') {
+        currentChatRoom = roomId;
+        if (!chatRooms.has(roomId)) {
+          chatRooms.set(roomId, new Set());
+        }
+        chatRooms.get(roomId).add(ws);
+
+        ws.send(JSON.stringify({
+          type: 'chat-joined',
+          roomId,
+          activeUsers: chatRooms.get(roomId).size,
+        }));
+      } else if (type === 'host-join') {
         currentRoom = roomId;
         isHostRole = true;
         const room = getOrCreateRoom(roomId);
@@ -632,15 +647,16 @@ wss.on('connection', (ws) => {
           });
         }
       } else if (type === 'chat-message') {
+        const targetRoom = roomId || currentChatRoom;
         const { message: chatMsg } = data;
-        if (!chatMsg || !currentRoom) return;
+        if (!chatMsg || !targetRoom) return;
 
         const stmt = db.prepare(`
           INSERT INTO room_messages (room_id, sender_name, sender_id, content, attachment_url, attachment_type)
           VALUES (?, ?, ?, ?, ?, ?)
         `);
         const result = stmt.run(
-          currentRoom,
+          targetRoom,
           (chatMsg.senderName || 'Anonymous').trim(),
           chatMsg.senderId || 'user',
           chatMsg.content || '',
@@ -650,13 +666,23 @@ wss.on('connection', (ws) => {
 
         const savedMsg = db.prepare('SELECT * FROM room_messages WHERE id = ?').get(result.lastInsertRowid);
 
-        if (rooms.has(currentRoom)) {
-          const room = rooms.get(currentRoom);
-          room.participants.forEach((client) => {
+        if (chatRooms.has(targetRoom)) {
+          chatRooms.get(targetRoom).forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({
                 type: 'chat-message',
-                roomId: currentRoom,
+                roomId: targetRoom,
+                message: savedMsg,
+              }));
+            }
+          });
+        }
+        if (rooms.has(targetRoom)) {
+          rooms.get(targetRoom).participants.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'chat-message',
+                roomId: targetRoom,
                 message: savedMsg,
               }));
             }
@@ -669,6 +695,13 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    if (currentChatRoom && chatRooms.has(currentChatRoom)) {
+      chatRooms.get(currentChatRoom).delete(ws);
+      if (chatRooms.get(currentChatRoom).size === 0) {
+        chatRooms.delete(currentChatRoom);
+      }
+    }
+
     if (currentRoom && rooms.has(currentRoom)) {
       const room = rooms.get(currentRoom);
       if (room.hostSocket === ws) {
