@@ -126,6 +126,68 @@ try {
   db.exec('CREATE INDEX IF NOT EXISTS idx_room_messages_room ON room_messages(room_id)');
 } catch (e) {}
 
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN client_msg_id TEXT');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN reply_to_id INTEGER');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN reply_to_sender TEXT');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN reply_to_content TEXT');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN is_deleted INTEGER DEFAULT 0');
+} catch (e) {}
+try {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_room_messages_client_id ON room_messages(client_msg_id)');
+} catch (e) {}
+
+// Clean up duplicate historical messages (keep earliest id per unique content)
+try {
+  db.exec(`
+    DELETE FROM room_messages 
+    WHERE id NOT IN (
+      SELECT MIN(id) 
+      FROM room_messages 
+      GROUP BY LOWER(room_id), sender_name, content, attachment_url, strftime('%Y-%m-%d %H:%M:%S', created_at)
+    )
+  `);
+} catch (e) {}
+
+function saveRoomMessage(targetRoom, chatMsg) {
+  const clientMsgId = chatMsg.clientMsgId || chatMsg.client_msg_id || null;
+  if (clientMsgId) {
+    const existing = db.prepare('SELECT * FROM room_messages WHERE client_msg_id = ?').get(clientMsgId);
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO room_messages (
+      room_id, sender_name, sender_id, content, attachment_url, attachment_type, client_msg_id, reply_to_id, reply_to_sender, reply_to_content, is_deleted
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+  `);
+  const result = stmt.run(
+    targetRoom,
+    (chatMsg.senderName || chatMsg.sender_name || 'Anonymous').trim(),
+    chatMsg.senderId || chatMsg.sender_id || 'user',
+    chatMsg.content || '',
+    chatMsg.attachmentUrl || chatMsg.attachment_url || null,
+    chatMsg.attachmentType || chatMsg.attachment_type || 'text',
+    clientMsgId,
+    chatMsg.replyToId || chatMsg.reply_to_id || null,
+    chatMsg.replyToSender || chatMsg.reply_to_sender || null,
+    chatMsg.replyToContent || chatMsg.reply_to_content || null
+  );
+
+  return db.prepare('SELECT * FROM room_messages WHERE id = ?').get(result.lastInsertRowid);
+}
+
 // Clean up any Saturday Townhall meetings scheduled on non-Saturdays
 try {
   db.prepare(`
@@ -500,29 +562,16 @@ app.get('/api/rooms/:roomId/messages', (req, res) => {
   }
 });
 
-// Global Online Chat: Post message fallback endpoint
+// Global Online Chat: Post message endpoint
 app.post('/api/rooms/:roomId/messages', (req, res) => {
   try {
     const targetRoom = (req.params.roomId || 'general').trim().toLowerCase();
-    const { senderName, senderId, content, attachmentUrl, attachmentType } = req.body || {};
-    if (!content && !attachmentUrl) {
+    const chatMsg = req.body || {};
+    if (!chatMsg.content && !chatMsg.attachmentUrl) {
       return res.status(400).json({ error: 'Message content or attachment is required.' });
     }
 
-    const stmt = db.prepare(`
-      INSERT INTO room_messages (room_id, sender_name, sender_id, content, attachment_url, attachment_type)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    const result = stmt.run(
-      targetRoom,
-      (senderName || 'Anonymous').trim(),
-      senderId || 'user',
-      content || '',
-      attachmentUrl || null,
-      attachmentType || 'text'
-    );
-
-    const savedMsg = db.prepare('SELECT * FROM room_messages WHERE id = ?').get(result.lastInsertRowid);
+    const savedMsg = saveRoomMessage(targetRoom, chatMsg);
 
     const broadcastPayload = JSON.stringify({
       type: 'chat-message',
@@ -539,6 +588,38 @@ app.post('/api/rooms/:roomId/messages', (req, res) => {
     }
 
     res.json(savedMsg);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Global Online Chat: Delete message for everyone
+app.delete('/api/rooms/:roomId/messages/:messageId', (req, res) => {
+  try {
+    const targetRoom = (req.params.roomId || 'general').trim().toLowerCase();
+    const messageId = Number(req.params.messageId);
+
+    db.prepare(`
+      UPDATE room_messages 
+      SET is_deleted = 1, content = 'This message was deleted', attachment_url = null
+      WHERE id = ? AND LOWER(room_id) = LOWER(?)
+    `).run(messageId, targetRoom);
+
+    const broadcastPayload = JSON.stringify({
+      type: 'chat-delete',
+      roomId: targetRoom,
+      messageId,
+    });
+
+    if (chatRooms.has(targetRoom)) {
+      chatRooms.get(targetRoom).forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(broadcastPayload);
+        }
+      });
+    }
+
+    res.json({ success: true, messageId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -705,20 +786,7 @@ wss.on('connection', (ws) => {
         }
         chatRooms.get(targetRoom).add(ws);
 
-        const stmt = db.prepare(`
-          INSERT INTO room_messages (room_id, sender_name, sender_id, content, attachment_url, attachment_type)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `);
-        const result = stmt.run(
-          targetRoom,
-          (chatMsg.senderName || 'Anonymous').trim(),
-          chatMsg.senderId || 'user',
-          chatMsg.content || '',
-          chatMsg.attachmentUrl || null,
-          chatMsg.attachmentType || 'text'
-        );
-
-        const savedMsg = db.prepare('SELECT * FROM room_messages WHERE id = ?').get(result.lastInsertRowid);
+        const savedMsg = saveRoomMessage(targetRoom, chatMsg);
 
         const broadcastPayload = JSON.stringify({
           type: 'chat-message',
@@ -735,6 +803,30 @@ wss.on('connection', (ws) => {
         }
         if (rooms.has(targetRoom)) {
           rooms.get(targetRoom).participants.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(broadcastPayload);
+            }
+          });
+        }
+      } else if (type === 'chat-delete') {
+        const targetRoom = (roomId || currentChatRoom || 'general').trim().toLowerCase();
+        const messageId = Number(data.messageId);
+        if (!messageId) return;
+
+        db.prepare(`
+          UPDATE room_messages 
+          SET is_deleted = 1, content = 'This message was deleted', attachment_url = null
+          WHERE id = ? AND LOWER(room_id) = LOWER(?)
+        `).run(messageId, targetRoom);
+
+        const broadcastPayload = JSON.stringify({
+          type: 'chat-delete',
+          roomId: targetRoom,
+          messageId,
+        });
+
+        if (chatRooms.has(targetRoom)) {
+          chatRooms.get(targetRoom).forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(broadcastPayload);
             }

@@ -4629,3 +4629,225 @@ body {
 
 
 
+
+/* ==========================================================================
+   WhatsApp-Style Global Work Chat: Reply, Actions, Delete & Receipts
+   ========================================================================== */
+
+/* Quoted Reply Box */
+.chat-reply-quote {
+  background: rgba(0, 0, 0, 0.05);
+  border-left: 3.5px solid #2563eb;
+  border-radius: 4px;
+  padding: 5px 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  user-select: none;
+}
+
+.msg-outgoing .chat-reply-quote,
+.chat-bubble-row.self .chat-reply-quote {
+  background: rgba(0, 0, 0, 0.08);
+  border-left-color: #059669;
+}
+
+.chat-reply-quote:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.quote-sender {
+  font-weight: 700;
+  font-size: 11px;
+  color: #1d4ed8;
+  margin-bottom: 2px;
+}
+
+.msg-outgoing .quote-sender,
+.chat-bubble-row.self .quote-sender {
+  color: #047857;
+}
+
+.quote-text {
+  color: inherit;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+/* Flash Highlight when Jumping to Quoted Message */
+.highlight-flash {
+  animation: flashHighlightAnimation 1.6s ease-out;
+}
+
+@keyframes flashHighlightAnimation {
+  0% {
+    background-color: rgba(59, 130, 246, 0.35) !important;
+    transform: scale(1.02);
+  }
+  50% {
+    background-color: rgba(59, 130, 246, 0.2) !important;
+  }
+  100% {
+    background-color: transparent !important;
+    transform: scale(1);
+  }
+}
+
+/* Deleted Message Styling */
+.message-content-wrapper.is-deleted {
+  display: flex;
+  align-items: center;
+}
+
+.message-deleted-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-style: italic;
+  font-size: 12.5px;
+  opacity: 0.7;
+  margin: 0;
+  user-select: none;
+}
+
+.msg-is-deleted .chat-bubble,
+.msg-is-deleted .chat-bubble-content {
+  opacity: 0.85;
+}
+
+/* Meta Right (Timestamp + Delivery Receipt) */
+.chat-meta-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-read-receipt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-read-receipt .receipt-icon {
+  font-size: 15px;
+  color: #2563eb;
+  line-height: 1;
+}
+
+/* Chat Bubble Actions Toolbar */
+.chat-bubble-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 4px;
+  padding-top: 3px;
+  border-top: 1px dashed rgba(0, 0, 0, 0.1);
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+
+.chat-bubble-content:hover .chat-bubble-actions,
+.chat-bubble:hover .chat-bubble-actions {
+  opacity: 1;
+}
+
+.btn-bubble-action {
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 5px;
+  font-size: 11px;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.btn-bubble-action .material-symbols-outlined {
+  font-size: 14px;
+}
+
+.btn-bubble-action:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.btn-bubble-action-delete:hover {
+  color: #dc2626 !important;
+  background: rgba(220, 38, 38, 0.1) !important;
+}
+
+/* Reply Preview Bar Above Composer */
+.chat-reply-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f1f5f9;
+  border: 1.5px solid #000000;
+  border-bottom: none;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  padding: 6px 12px;
+  box-shadow: 2px 0 0 #000000;
+  animation: slideUpReply 0.15s ease;
+}
+
+@keyframes slideUpReply {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.reply-preview-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.reply-preview-sender {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #2563eb;
+}
+
+.reply-preview-text {
+  font-size: 12px;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 480px;
+}
+
+.btn-cancel-reply {
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #64748b;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.btn-cancel-reply:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: #0f172a;
+}
