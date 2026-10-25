@@ -4851,3 +4851,293 @@ body {
   background: rgba(0, 0, 0, 0.08);
   color: #0f172a;
 }
+
+/* ==========================================================================
+   WhatsApp-Authentic Real-Time Chatting Enhancements
+   ========================================================================== */
+
+/* Authentic Chat Background Texture */
+.global-chat-messages-container {
+  position: relative;
+  background-color: #f1f5f9;
+  background-image: 
+    radial-gradient(#cbd5e1 0.75px, transparent 0.75px),
+    radial-gradient(#cbd5e1 0.75px, #f1f5f9 0.75px);
+  background-size: 30px 30px;
+  background-position: 0 0, 15px 15px;
+  scroll-behavior: smooth;
+}
+
+.room-chat-messages-scroll {
+  position: relative;
+  background-color: #f8fafc;
+  background-image: radial-gradient(#e2e8f0 0.75px, transparent 0.75px);
+  background-size: 20px 20px;
+  scroll-behavior: smooth;
+}
+
+/* Chat Date Separators */
+.chat-date-separator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 16px 0 10px 0;
+  position: relative;
+  width: 100%;
+}
+
+.chat-date-separator .date-chip {
+  background: #ffffff;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 16px;
+  padding: 3px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  user-select: none;
+}
+
+/* Online Presence Status Indicators */
+.chat-online-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #dcfce7;
+  border: 1px solid #16a34a;
+  border-radius: 14px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #15803d;
+}
+
+.pulse-green-dot {
+  width: 7px;
+  height: 7px;
+  background: #16a34a;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.7);
+  animation: pulseGreenAnimation 2s infinite;
+}
+
+@keyframes pulseGreenAnimation {
+  0% {
+    box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(22, 163, 74, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(22, 163, 74, 0);
+  }
+}
+
+.room-chat-online-pill {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #86efac;
+  border-radius: 10px;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+/* Typing Indicator Animation Bar */
+.chat-typing-indicator-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #ffffff;
+  border: 1.5px solid #000000;
+  border-bottom: none;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  padding: 6px 14px;
+  box-shadow: 2px 0 0 #000000;
+  animation: fadeInTyping 0.15s ease-out;
+}
+
+.mini-typing-bar {
+  padding: 4px 10px;
+  border-radius: 6px 6px 0 0;
+}
+
+@keyframes fadeInTyping {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.typing-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 3.5px;
+  background: #e0f2fe;
+  padding: 4px 8px;
+  border-radius: 12px;
+}
+
+.typing-dot {
+  width: 5px;
+  height: 5px;
+  background-color: #0284c7;
+  border-radius: 50%;
+  display: inline-block;
+  animation: typingDotBounce 1.4s infinite ease-in-out both;
+}
+
+.typing-dot:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+@keyframes typingDotBounce {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+}
+
+.typing-text {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #0369a1;
+}
+
+/* Floating Scroll-To-Bottom Button */
+.btn-scroll-bottom {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1.5px solid #000000;
+  box-shadow: 2px 2px 0 #000000;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #09090b;
+  z-index: 25;
+  transition: all 0.15s ease;
+  animation: fadeInBtn 0.15s ease;
+}
+
+.btn-scroll-bottom:hover {
+  transform: translateY(-2px);
+  box-shadow: 3px 3px 0 #000000;
+  background: #f8fafc;
+}
+
+.dock-scroll-bottom {
+  right: 14px;
+  bottom: 14px;
+  width: 34px;
+  height: 34px;
+}
+
+@keyframes fadeInBtn {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.scroll-unread-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 12px;
+  border: 1.5px solid #000000;
+}
+
+/* Drag & Drop Overlay for Image Sharing */
+.global-chat-messages-container.is-drag-over,
+.room-chat-messages-scroll.is-drag-over {
+  border: 2px dashed #2563eb !important;
+}
+
+.chat-dropzone-overlay {
+  position: absolute;
+  inset: 10px;
+  background: rgba(37, 99, 235, 0.92);
+  color: #ffffff;
+  border: 2px dashed #ffffff;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  z-index: 40;
+  pointer-events: none;
+  animation: fadeInOverlay 0.15s ease-out;
+}
+
+@keyframes fadeInOverlay {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.chat-dropzone-overlay .drop-icon {
+  font-size: 42px;
+}
+
+.chat-dropzone-overlay p {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  margin: 0;
+}
+
+/* WhatsApp-Inspired Outgoing & Incoming Bubble Color Enhancements */
+.global-chat-msg-row.msg-outgoing .chat-bubble-content {
+  background: #dcfce7 !important;
+  border-color: #000000 !important;
+  box-shadow: 2px 2px 0 #000000 !important;
+}
+
+.chat-bubble-row.self .chat-bubble {
+  background: #dcfce7 !important;
+  border-color: #000000 !important;
+}
+
+.chat-bubble-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-bubble-meta .chat-meta-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+}

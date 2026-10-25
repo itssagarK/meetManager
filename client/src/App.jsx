@@ -131,6 +131,13 @@ function App() {
   const [isCreateRoomModalOpen, setIsCreateRoomModalOpen] = useState(false);
   const [newRoomInputCode, setNewRoomInputCode] = useState('');
   const [replyingTo, setReplyingTo] = useState(null); // { id, sender, content }
+  const [chatOnlineCount, setChatOnlineCount] = useState(1);
+  const [typingUsers, setTypingUsers] = useState([]);
+  const [isDraggingOverChat, setIsDraggingOverChat] = useState(false);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const [unreadWhileScrolled, setUnreadWhileScrolled] = useState(0);
+  const typingTimeoutRef = useRef(null);
+  const lastTypingSentRef = useRef(0);
   const chatMessagesEndRef = useRef(null);
   const chatFileInputRef = useRef(null);
   const chatWsRef = useRef(null);
@@ -1332,6 +1339,21 @@ function App() {
     setChatInputText('');
     setChatAttachment(null);
 
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    if (chatWsRef.current && chatWsRef.current.readyState === WebSocket.OPEN) {
+      chatWsRef.current.send(
+        JSON.stringify({
+          type: 'chat-typing',
+          roomId: targetRoom,
+          senderName: sender,
+          isTyping: false,
+        })
+      );
+    }
+    setTimeout(() => {
+      chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 50);
+
     // Send via WebSocket if connected, otherwise fallback to REST (never both simultaneously)
     if (chatWsRef.current && chatWsRef.current.readyState === WebSocket.OPEN) {
       chatWsRef.current.send(
@@ -1533,6 +1555,142 @@ function App() {
     );
   };
 
+  const playChatNotificationSound = () => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.22);
+    } catch (e) {}
+  };
+
+  const getChatDayLabel = (dateStr) => {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return '';
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    if (isToday) return 'Today';
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+    return date.toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+    });
+  };
+
+  const shouldShowDateSeparator = (currTime, prevTime) => {
+    if (!currTime) return false;
+    if (!prevTime) return true;
+    const d1 = new Date(currTime);
+    const d2 = new Date(prevTime);
+    if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return false;
+    return d1.toDateString() !== d2.toDateString();
+  };
+
+  const handleChatInputChange = (val) => {
+    setChatInputText(val);
+    const targetRoom = (isGlobalChatMode ? activeChatRoom : (activeCallRoom || activeChatRoom || 'general')).trim().toLowerCase();
+    const now = Date.now();
+    if (now - lastTypingSentRef.current > 1500) {
+      lastTypingSentRef.current = now;
+      if (chatWsRef.current && chatWsRef.current.readyState === WebSocket.OPEN) {
+        chatWsRef.current.send(JSON.stringify({
+          type: 'chat-typing',
+          roomId: targetRoom,
+          senderName: guestName.trim() || 'Colleague',
+          isTyping: true,
+        }));
+      }
+    }
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      if (chatWsRef.current && chatWsRef.current.readyState === WebSocket.OPEN) {
+        chatWsRef.current.send(JSON.stringify({
+          type: 'chat-typing',
+          roomId: targetRoom,
+          senderName: guestName.trim() || 'Colleague',
+          isTyping: false,
+        }));
+      }
+    }, 2200);
+  };
+
+  const handleChatDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOverChat(true);
+  };
+
+  const handleChatDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOverChat(false);
+  };
+
+  const handleChatDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOverChat(false);
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('File size exceeds 10MB limit');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setChatAttachment({
+        url: reader.result,
+        type: 'image',
+        name: file.name,
+      });
+      showToast(`Image attached: ${file.name}`);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleChatScroll = (e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    const isScrolledUp = scrollHeight - scrollTop - clientHeight > 90;
+    setShowScrollDown(isScrolledUp);
+    if (!isScrolledUp) {
+      setUnreadWhileScrolled(0);
+    }
+  };
+
+  const scrollToBottom = (smooth = true) => {
+    chatMessagesEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' });
+    setShowScrollDown(false);
+    setUnreadWhileScrolled(0);
+  };
+
+  useEffect(() => {
+    const handleEscKey = (e) => {
+      if (e.key === 'Escape') {
+        if (replyingTo) {
+          setReplyingTo(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleEscKey);
+    return () => window.removeEventListener('keydown', handleEscKey);
+  }, [replyingTo]);
+
   const handleOpenGlobalChat = () => {
     const room = activeCallRoom || activeChatRoom || 'general';
     setIsRoomChatOpen((prev) => !prev);
@@ -1619,7 +1777,25 @@ function App() {
       ws.onmessage = (msgEvent) => {
         try {
           const data = JSON.parse(msgEvent.data);
-          if (data.type === 'chat-message' && data.message) {
+          if (data.type === 'chat-presence') {
+            if (data.onlineCount) {
+              setChatOnlineCount(data.onlineCount);
+            }
+          } else if (data.type === 'chat-typing') {
+            const typingSender = data.senderName;
+            if (typingSender && typingSender !== (guestName.trim() || 'Colleague')) {
+              if (data.isTyping) {
+                setTypingUsers((prev) => (prev.includes(typingSender) ? prev : [...prev, typingSender]));
+              } else {
+                setTypingUsers((prev) => prev.filter((u) => u !== typingSender));
+              }
+            }
+          } else if (data.type === 'chat-message' && data.message) {
+            const isPeer = data.message.sender_name && data.message.sender_name !== (guestName.trim() || 'Colleague');
+            if (isPeer) {
+              playChatNotificationSound();
+              setTypingUsers((prev) => prev.filter((u) => u !== data.message.sender_name));
+            }
             setChatMessages((prev) => {
               const existingIdx = prev.findIndex(
                 (m) =>
@@ -2645,12 +2821,32 @@ function App() {
                 </div>
               </div>
               <div className="banner-stats">
+                <div className="chat-online-indicator">
+                  <span className="pulse-green-dot"></span>
+                  <span className="online-count-label">
+                    {chatOnlineCount} {chatOnlineCount === 1 ? 'member online' : 'members online'}
+                  </span>
+                </div>
                 <span className="message-count-badge">{chatMessages.length} messages</span>
               </div>
             </div>
 
             {/* Messages Stream */}
-            <div className="global-chat-messages-container" onPaste={handlePasteEvent}>
+            <div
+              className={`global-chat-messages-container ${isDraggingOverChat ? 'is-drag-over' : ''}`}
+              onPaste={handlePasteEvent}
+              onScroll={handleChatScroll}
+              onDragOver={handleChatDragOver}
+              onDragLeave={handleChatDragLeave}
+              onDrop={handleChatDrop}
+            >
+              {isDraggingOverChat && (
+                <div className="chat-dropzone-overlay">
+                  <span className="material-symbols-outlined drop-icon">cloud_upload</span>
+                  <p>Drop image or screenshot here to share instantly</p>
+                </div>
+              )}
+
               {chatMessages.length === 0 ? (
                 <div className="global-chat-empty-state">
                   <span className="material-symbols-outlined empty-icon">forum</span>
@@ -2675,77 +2871,117 @@ function App() {
                       msg.sender_id === (sessionStorage.getItem('pcs_guest_office_id') || sessionStorage.getItem('pcs_user_id'));
                     const initial = (msg.sender_name || 'U').charAt(0).toUpperCase();
                     const domId = `chat-msg-${msg.id || msg.client_msg_id || idx}`;
+                    const prevMsg = idx > 0 ? chatMessages[idx - 1] : null;
+                    const showDateSep = shouldShowDateSeparator(msg.created_at, prevMsg?.created_at);
+                    const dateLabel = showDateSep ? getChatDayLabel(msg.created_at) : null;
+
                     return (
-                      <div
-                        key={msg.id || msg.client_msg_id || idx}
-                        id={domId}
-                        className={`global-chat-msg-row ${isSelf ? 'msg-outgoing' : 'msg-incoming'} ${msg.is_deleted ? 'msg-is-deleted' : ''}`}
-                      >
-                        {!isSelf && (
-                          <div className="chat-avatar-bubble" title={msg.sender_name}>
-                            {initial}
+                      <React.Fragment key={msg.id || msg.client_msg_id || idx}>
+                        {dateLabel && (
+                          <div className="chat-date-separator">
+                            <span className="date-chip">{dateLabel}</span>
                           </div>
                         )}
-                        <div className="chat-bubble-content">
-                          <div className="chat-bubble-meta">
-                            <span className="chat-sender-name">{msg.sender_name || 'Colleague'}</span>
-                            <div className="chat-meta-right">
-                              <span className="chat-time-tag">
-                                {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                              </span>
-                              {isSelf && !msg.is_deleted && (
-                                <span className="chat-read-receipt" title="Delivered">
-                                  <span className="material-symbols-outlined receipt-icon">done_all</span>
-                                </span>
-                              )}
+                        <div
+                          id={domId}
+                          className={`global-chat-msg-row ${isSelf ? 'msg-outgoing' : 'msg-incoming'} ${msg.is_deleted ? 'msg-is-deleted' : ''}`}
+                        >
+                          {!isSelf && (
+                            <div className="chat-avatar-bubble" title={msg.sender_name}>
+                              {initial}
                             </div>
-                          </div>
-                          {renderMessageContent(msg)}
-                          {!msg.is_deleted && (
-                            <div className="chat-bubble-actions">
-                              <button
-                                type="button"
-                                className="btn-bubble-action"
-                                onClick={() => handleReplyChatMessage(msg)}
-                                title="Reply to message"
-                              >
-                                <span className="material-symbols-outlined">reply</span>
-                              </button>
-                              {msg.content && (
+                          )}
+                          <div className="chat-bubble-content">
+                            <div className="chat-bubble-meta">
+                              <span className="chat-sender-name">{msg.sender_name || 'Colleague'}</span>
+                              <div className="chat-meta-right">
+                                <span className="chat-time-tag">
+                                  {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                                </span>
+                                {isSelf && !msg.is_deleted && (
+                                  <span className="chat-read-receipt" title="Delivered">
+                                    <span className="material-symbols-outlined receipt-icon">done_all</span>
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            {renderMessageContent(msg)}
+                            {!msg.is_deleted && (
+                              <div className="chat-bubble-actions">
                                 <button
                                   type="button"
                                   className="btn-bubble-action"
-                                  onClick={() => handleCopyMessageText(msg)}
-                                  title="Copy message text"
+                                  onClick={() => handleReplyChatMessage(msg)}
+                                  title="Reply to message"
                                 >
-                                  <span className="material-symbols-outlined">content_copy</span>
+                                  <span className="material-symbols-outlined">reply</span>
                                 </button>
-                              )}
-                              {isSelf && (
-                                <button
-                                  type="button"
-                                  className="btn-bubble-action btn-bubble-action-delete"
-                                  onClick={() => handleDeleteChatMessage(msg.id)}
-                                  title="Delete for everyone"
-                                >
-                                  <span className="material-symbols-outlined">delete</span>
-                                </button>
-                              )}
+                                {msg.content && (
+                                  <button
+                                    type="button"
+                                    className="btn-bubble-action"
+                                    onClick={() => handleCopyMessageText(msg)}
+                                    title="Copy message text"
+                                  >
+                                    <span className="material-symbols-outlined">content_copy</span>
+                                  </button>
+                                )}
+                                {isSelf && (
+                                  <button
+                                    type="button"
+                                    className="btn-bubble-action btn-bubble-action-delete"
+                                    onClick={() => handleDeleteChatMessage(msg.id)}
+                                    title="Delete for everyone"
+                                  >
+                                    <span className="material-symbols-outlined">delete</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          {isSelf && (
+                            <div className="chat-avatar-bubble self" title="You">
+                              {initial}
                             </div>
                           )}
                         </div>
-                        {isSelf && (
-                          <div className="chat-avatar-bubble self" title="You">
-                            {initial}
-                          </div>
-                        )}
-                      </div>
+                      </React.Fragment>
                     );
                   })}
                   <div ref={chatMessagesEndRef} />
                 </div>
               )}
+
+              {showScrollDown && (
+                <button
+                  type="button"
+                  className="btn-scroll-bottom"
+                  onClick={() => scrollToBottom(true)}
+                  title="Scroll to latest messages"
+                >
+                  <span className="material-symbols-outlined">arrow_downward</span>
+                  {unreadWhileScrolled > 0 && (
+                    <span className="scroll-unread-badge">{unreadWhileScrolled}</span>
+                  )}
+                </button>
+              )}
             </div>
+
+            {/* Typing Indicator Bar */}
+            {typingUsers.length > 0 && (
+              <div className="chat-typing-indicator-bar">
+                <div className="typing-bubble">
+                  <span className="typing-dot"></span>
+                  <span className="typing-dot"></span>
+                  <span className="typing-dot"></span>
+                </div>
+                <span className="typing-text">
+                  {typingUsers.length === 1
+                    ? `${typingUsers[0]} is typing...`
+                    : `${typingUsers.slice(0, 2).join(', ')} are typing...`}
+                </span>
+              </div>
+            )}
 
             {/* Quoted Reply Preview Bar */}
             {replyingTo && (
@@ -2761,7 +2997,7 @@ function App() {
                   type="button"
                   className="btn-cancel-reply"
                   onClick={() => setReplyingTo(null)}
-                  title="Cancel reply"
+                  title="Cancel reply (Esc)"
                 >
                   <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
                 </button>
@@ -2809,7 +3045,7 @@ function App() {
                   type="text"
                   placeholder="Type message, share link, or paste image... (Press Enter to send)"
                   value={chatInputText}
-                  onChange={(e) => setChatInputText(e.target.value)}
+                  onChange={(e) => handleChatInputChange(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
@@ -5008,6 +5244,7 @@ function App() {
                   <div className="room-chat-title-group">
                     <span className="live-chat-dot"></span>
                     <span className="room-chat-name">Room: <strong>#{currentDockRoom}</strong></span>
+                    <span className="room-chat-online-pill">{chatOnlineCount} online</span>
                     <span className="room-chat-count">{chatMessages.length} msgs</span>
                   </div>
                   <div className="room-chat-header-actions">
@@ -5040,7 +5277,20 @@ function App() {
                   </div>
                 </div>
 
-                <div className="room-chat-messages-scroll">
+                <div
+                  className={`room-chat-messages-scroll ${isDraggingOverChat ? 'is-drag-over' : ''}`}
+                  onScroll={handleChatScroll}
+                  onDragOver={handleChatDragOver}
+                  onDragLeave={handleChatDragLeave}
+                  onDrop={handleChatDrop}
+                >
+                  {isDraggingOverChat && (
+                    <div className="chat-dropzone-overlay">
+                      <span className="material-symbols-outlined drop-icon">cloud_upload</span>
+                      <p>Drop image here to share</p>
+                    </div>
+                  )}
+
                   {chatMessages.length === 0 ? (
                     <div className="chat-empty-slate">
                       <span className="material-symbols-outlined chat-empty-icon">forum</span>
@@ -5062,68 +5312,107 @@ function App() {
                         m.sender_id === (sessionStorage.getItem('pcs_guest_office_id') || sessionStorage.getItem('pcs_user_id'));
                       const timeStr = m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
                       const domId = `chat-msg-${m.id || m.client_msg_id || idx}`;
+                      const prevMsg = idx > 0 ? chatMessages[idx - 1] : null;
+                      const showDateSep = shouldShowDateSeparator(m.created_at, prevMsg?.created_at);
+                      const dateLabel = showDateSep ? getChatDayLabel(m.created_at) : null;
+
                       return (
-                        <div
-                          key={m.id || m.client_msg_id || idx}
-                          id={domId}
-                          className={`chat-bubble-row ${isSelf ? 'self' : 'peer'} ${m.is_deleted ? 'msg-is-deleted' : ''}`}
-                        >
-                          <div className="chat-bubble">
-                            <div className="chat-bubble-meta">
-                              <span className="chat-sender-name">{m.sender_name}</span>
-                              <div className="chat-meta-right">
-                                <span className="chat-timestamp">{timeStr}</span>
-                                {isSelf && !m.is_deleted && (
-                                  <span className="chat-read-receipt" title="Delivered">
-                                    <span className="material-symbols-outlined receipt-icon">done_all</span>
-                                  </span>
-                                )}
+                        <React.Fragment key={m.id || m.client_msg_id || idx}>
+                          {dateLabel && (
+                            <div className="chat-date-separator">
+                              <span className="date-chip">{dateLabel}</span>
+                            </div>
+                          )}
+                          <div
+                            id={domId}
+                            className={`chat-bubble-row ${isSelf ? 'self' : 'peer'} ${m.is_deleted ? 'msg-is-deleted' : ''}`}
+                          >
+                            <div className="chat-bubble">
+                              <div className="chat-bubble-meta">
+                                <span className="chat-sender-name">{m.sender_name}</span>
+                                <div className="chat-meta-right">
+                                  <span className="chat-timestamp">{timeStr}</span>
+                                  {isSelf && !m.is_deleted && (
+                                    <span className="chat-read-receipt" title="Delivered">
+                                      <span className="material-symbols-outlined receipt-icon">done_all</span>
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                            <div className="chat-bubble-content">
-                              {renderMessageContent(m)}
-                            </div>
-                            {!m.is_deleted && (
-                              <div className="chat-bubble-actions">
-                                <button
-                                  type="button"
-                                  className="btn-bubble-action"
-                                  onClick={() => handleReplyChatMessage(m)}
-                                  title="Reply to message"
-                                >
-                                  <span className="material-symbols-outlined">reply</span>
-                                </button>
-                                {m.content && (
+                              <div className="chat-bubble-content">
+                                {renderMessageContent(m)}
+                              </div>
+                              {!m.is_deleted && (
+                                <div className="chat-bubble-actions">
                                   <button
                                     type="button"
                                     className="btn-bubble-action"
-                                    onClick={() => handleCopyMessageText(m)}
-                                    title="Copy message text"
+                                    onClick={() => handleReplyChatMessage(m)}
+                                    title="Reply to message"
                                   >
-                                    <span className="material-symbols-outlined">content_copy</span>
+                                    <span className="material-symbols-outlined">reply</span>
                                   </button>
-                                )}
-                                {isSelf && (
-                                  <button
-                                    type="button"
-                                    className="btn-bubble-action btn-bubble-action-delete"
-                                    onClick={() => handleDeleteChatMessage(m.id)}
-                                    title="Delete for everyone"
-                                  >
-                                    <span className="material-symbols-outlined">delete</span>
-                                  </button>
-                                )}
-                              </div>
-                            )}
+                                  {m.content && (
+                                    <button
+                                      type="button"
+                                      className="btn-bubble-action"
+                                      onClick={() => handleCopyMessageText(m)}
+                                      title="Copy message text"
+                                    >
+                                      <span className="material-symbols-outlined">content_copy</span>
+                                    </button>
+                                  )}
+                                  {isSelf && (
+                                    <button
+                                      type="button"
+                                      className="btn-bubble-action btn-bubble-action-delete"
+                                      onClick={() => handleDeleteChatMessage(m.id)}
+                                      title="Delete for everyone"
+                                    >
+                                      <span className="material-symbols-outlined">delete</span>
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
+                        </React.Fragment>
                       );
                     })
                   )}
                   <div ref={chatMessagesEndRef} />
+
+                  {showScrollDown && (
+                    <button
+                      type="button"
+                      className="btn-scroll-bottom dock-scroll-bottom"
+                      onClick={() => scrollToBottom(true)}
+                      title="Scroll to latest messages"
+                    >
+                      <span className="material-symbols-outlined">arrow_downward</span>
+                      {unreadWhileScrolled > 0 && (
+                        <span className="scroll-unread-badge">{unreadWhileScrolled}</span>
+                      )}
+                    </button>
+                  )}
                 </div>
 
                 <div className="room-chat-composer">
+                  {typingUsers.length > 0 && (
+                    <div className="chat-typing-indicator-bar mini-typing-bar">
+                      <div className="typing-bubble">
+                        <span className="typing-dot"></span>
+                        <span className="typing-dot"></span>
+                        <span className="typing-dot"></span>
+                      </div>
+                      <span className="typing-text">
+                        {typingUsers.length === 1
+                          ? `${typingUsers[0]} is typing...`
+                          : `${typingUsers.slice(0, 2).join(', ')} typing...`}
+                      </span>
+                    </div>
+                  )}
+
                   {replyingTo && (
                     <div className="chat-reply-preview-bar">
                       <div className="reply-preview-content">
@@ -5180,7 +5469,7 @@ function App() {
                       placeholder="Type a message, paste image, or drop work link..."
                       rows="1"
                       value={chatInputText}
-                      onChange={(e) => setChatInputText(e.target.value)}
+                      onChange={(e) => handleChatInputChange(e.target.value)}
                       onPaste={handlePasteEvent}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {

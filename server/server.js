@@ -651,7 +651,18 @@ wss.on('connection', (ws) => {
       if (type === 'chat-join') {
         const normalizedRoom = (roomId || 'general').trim().toLowerCase();
         if (currentChatRoom && currentChatRoom !== normalizedRoom && chatRooms.has(currentChatRoom)) {
-          chatRooms.get(currentChatRoom).delete(ws);
+          const oldSet = chatRooms.get(currentChatRoom);
+          oldSet.delete(ws);
+          if (oldSet.size > 0) {
+            const oldPresence = JSON.stringify({
+              type: 'chat-presence',
+              roomId: currentChatRoom,
+              onlineCount: oldSet.size,
+            });
+            oldSet.forEach((c) => {
+              if (c.readyState === WebSocket.OPEN) c.send(oldPresence);
+            });
+          }
         }
         currentChatRoom = normalizedRoom;
         if (!chatRooms.has(normalizedRoom)) {
@@ -659,11 +670,37 @@ wss.on('connection', (ws) => {
         }
         chatRooms.get(normalizedRoom).add(ws);
 
-        ws.send(JSON.stringify({
-          type: 'chat-joined',
+        const currentCount = chatRooms.get(normalizedRoom).size;
+        const presencePayload = JSON.stringify({
+          type: 'chat-presence',
           roomId: normalizedRoom,
-          activeUsers: chatRooms.get(normalizedRoom).size,
-        }));
+          onlineCount: currentCount,
+        });
+
+        // Broadcast presence update to everyone in this room
+        chatRooms.get(normalizedRoom).forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(presencePayload);
+          }
+        });
+      } else if (type === 'chat-typing') {
+        const targetRoom = (roomId || currentChatRoom || 'general').trim().toLowerCase();
+        const typingSender = (data.senderName || 'Colleague').trim();
+        const isTyping = Boolean(data.isTyping);
+
+        if (chatRooms.has(targetRoom)) {
+          const typingPayload = JSON.stringify({
+            type: 'chat-typing',
+            roomId: targetRoom,
+            senderName: typingSender,
+            isTyping,
+          });
+          chatRooms.get(targetRoom).forEach((client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(typingPayload);
+            }
+          });
+        }
       } else if (type === 'host-join') {
         currentRoom = roomId;
         isHostRole = true;
@@ -840,7 +877,21 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     chatRooms.forEach((clientSet, rId) => {
-      clientSet.delete(ws);
+      if (clientSet.has(ws)) {
+        clientSet.delete(ws);
+        if (clientSet.size > 0) {
+          const presencePayload = JSON.stringify({
+            type: 'chat-presence',
+            roomId: rId,
+            onlineCount: clientSet.size,
+          });
+          clientSet.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(presencePayload);
+            }
+          });
+        }
+      }
       if (clientSet.size === 0) {
         chatRooms.delete(rId);
       }
