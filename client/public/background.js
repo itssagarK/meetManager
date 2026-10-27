@@ -15,7 +15,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     const meetingTitle = alarm.name.replace('meet-alert:', '');
     chrome.notifications.create({
       type: 'basic',
-      iconUrl: 'favicon.svg',
+      iconUrl: 'icon-128.png',
       title: 'Upcoming Meeting - PCS Meet Manager',
       message: `"${meetingTitle}" starts in 2 minutes.`,
       priority: 2,

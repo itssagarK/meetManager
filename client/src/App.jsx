@@ -1,7 +1,33 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 
-const API_URL = '/api/meetings';
+const isChromeExtension = typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:';
+const DEFAULT_BACKEND_ORIGIN = isChromeExtension ? 'http://localhost:5000' : '';
+
+const getApiUrl = (endpoint) => {
+  if (!endpoint) return '';
+  if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) return endpoint;
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return `${DEFAULT_BACKEND_ORIGIN}${cleanEndpoint}`;
+};
+
+const getWsUrl = (path = '/ws') => {
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  if (isChromeExtension) {
+    return `ws://localhost:5000${cleanPath}`;
+  }
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}${cleanPath}`;
+};
+
+const getPublicWebOrigin = () => {
+  if (isChromeExtension) {
+    return 'http://localhost:5000';
+  }
+  return window.location.origin;
+};
+
+const API_URL = getApiUrl('/api/meetings');
 
 const RTC_CONFIG = {
   iceServers: [
@@ -199,7 +225,7 @@ function App() {
       ...(options.headers || {}),
       'X-Workspace-Id': workspaceId,
     };
-    return fetch(url, { ...options, headers });
+    return fetch(getApiUrl(url), { ...options, headers });
   };
 
   const fetchItems = async (wsId = workspaceId) => {
@@ -504,7 +530,7 @@ function App() {
   const handleCopyMeetingInvite = (item) => {
     let resolvedLink = item.link;
     if (resolvedLink && !resolvedLink.startsWith('http://') && !resolvedLink.startsWith('https://')) {
-      const base = publicBaseUrl || window.location.origin;
+      const base = publicBaseUrl || getPublicWebOrigin();
       const query = resolvedLink.startsWith('?') ? resolvedLink : (resolvedLink.startsWith('room=') ? `?${resolvedLink}` : `?room=${resolvedLink}`);
       resolvedLink = `${base}${query}`;
     }
@@ -785,8 +811,7 @@ function App() {
       }
 
       // Connect to WebSocket signaling server
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const wsUrl = getWsUrl('/ws');
       const ws = new WebSocket(wsUrl);
       wsSignalingRef.current = ws;
 
@@ -1029,7 +1054,7 @@ function App() {
 
   const handleCopyGuestLink = () => {
     if (!activeCallRoom) return;
-    const origin = publicBaseUrl || window.location.origin;
+    const origin = publicBaseUrl || getPublicWebOrigin();
     const guestUrl = `${origin}?room=${activeCallRoom}`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(guestUrl);
@@ -1056,8 +1081,7 @@ function App() {
     setGuestDeniedReason('');
     setCallStatusText('Knocking on room... Waiting for host admission');
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const wsUrl = getWsUrl('/ws');
     const ws = new WebSocket(wsUrl);
     wsSignalingRef.current = ws;
 
@@ -1225,7 +1249,7 @@ function App() {
   };
 
   const handleCopyPublicPortalLink = () => {
-    const origin = publicBaseUrl || window.location.origin;
+    const origin = publicBaseUrl || getPublicWebOrigin();
     const publicUrl = `${origin}?public=1`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(publicUrl);
@@ -1240,7 +1264,7 @@ function App() {
     setIsGuestMode(true);
     setActiveCallRoom(roomId);
     window.history.pushState({}, document.title, `?room=${roomId}`);
-    fetch(`/api/public/room-status?room=${roomId}`)
+    fetch(getApiUrl(`/api/public/room-status?room=${roomId}`))
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data) setIsHostOnlineInRoom(Boolean(data.isLive));
@@ -1261,7 +1285,7 @@ function App() {
   // Load public meetings when public portal is active
   const fetchPublicMeetings = () => {
     setIsPublicLoading(true);
-    fetch('/api/public/live-meetings')
+    fetch(getApiUrl('/api/public/live-meetings'))
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => {
         setPublicMeetings(data || []);
@@ -1283,7 +1307,7 @@ function App() {
   // Global Online Work Chat & Image Sharing Handlers
   const handleLoadRoomMessages = (roomId) => {
     if (!roomId) return;
-    fetch(`/api/rooms/${roomId}/messages`)
+    fetch(getApiUrl(`/api/rooms/${roomId}/messages`))
       .then((res) => (res.ok ? res.json() : []))
       .then((msgs) => setChatMessages(msgs || []))
       .catch((err) => console.warn('Could not load messages:', err));
@@ -1364,7 +1388,7 @@ function App() {
         })
       );
     } else {
-      fetch(`/api/rooms/${encodeURIComponent(targetRoom)}/messages`, {
+      fetch(getApiUrl(`/api/rooms/${encodeURIComponent(targetRoom)}/messages`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(msgPayload),
@@ -1424,7 +1448,7 @@ function App() {
     }
 
     // Call REST delete endpoint
-    fetch(`/api/rooms/${encodeURIComponent(targetRoom)}/messages/${messageId}`, {
+    fetch(getApiUrl(`/api/rooms/${encodeURIComponent(targetRoom)}/messages/${messageId}`), {
       method: 'DELETE',
     }).catch((err) => console.warn('Delete error:', err));
   };
@@ -1728,7 +1752,7 @@ function App() {
 
   const handleCopyChatShareLink = (roomCode) => {
     const code = roomCode || activeChatRoom || 'general';
-    const origin = publicBaseUrl || window.location.origin;
+    const origin = publicBaseUrl || getPublicWebOrigin();
     const shareUrl = `${origin}?chat=${code}`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(shareUrl);
@@ -1741,7 +1765,7 @@ function App() {
   const handleCopyRoomShareLink = (roomId) => {
     const code = roomId || activeCallRoom;
     if (!code) return;
-    const origin = publicBaseUrl || window.location.origin;
+    const origin = publicBaseUrl || getPublicWebOrigin();
     const shareUrl = `${origin}?room=${code}`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(shareUrl);
@@ -1759,8 +1783,7 @@ function App() {
 
     const setupChatWs = () => {
       if (!isMounted) return;
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const wsUrl = getWsUrl('/ws');
       ws = new WebSocket(wsUrl);
       chatWsRef.current = ws;
 
@@ -1863,7 +1886,7 @@ function App() {
   useEffect(() => {
     const currentRoom = (isGlobalChatMode ? activeChatRoom : (activeCallRoom || activeChatRoom || 'general')).trim().toLowerCase();
     const syncInterval = setInterval(() => {
-      fetch(`/api/rooms/${encodeURIComponent(currentRoom)}/messages`)
+      fetch(getApiUrl(`/api/rooms/${encodeURIComponent(currentRoom)}/messages`))
         .then((res) => (res.ok ? res.json() : []))
         .then((latest) => {
           if (Array.isArray(latest)) {
@@ -1917,7 +1940,7 @@ function App() {
 
   // Fetch production ICE configuration (STUN + TURN relay + Public URL) from backend
   useEffect(() => {
-    fetch('/api/webrtc/ice-config')
+    fetch(getApiUrl('/api/webrtc/ice-config'))
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data) {
@@ -1938,7 +1961,7 @@ function App() {
     const roomParam = urlParams.get('room');
     if (roomParam) {
       setActiveCallRoom(roomParam);
-      fetch(`/api/public/room-status?room=${roomParam}`)
+      fetch(getApiUrl(`/api/public/room-status?room=${roomParam}`))
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (data) setIsHostOnlineInRoom(Boolean(data.isLive));
@@ -1951,7 +1974,7 @@ function App() {
   useEffect(() => {
     if (!isGuestMode || guestKnockStatus === 'admitted' || !activeCallRoom) return;
     const interval = setInterval(() => {
-      fetch(`/api/public/room-status?room=${activeCallRoom}`)
+      fetch(getApiUrl(`/api/public/room-status?room=${activeCallRoom}`))
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (data) setIsHostOnlineInRoom(Boolean(data.isLive));
