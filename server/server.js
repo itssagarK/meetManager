@@ -718,8 +718,15 @@ wss.on('connection', (ws) => {
             timestamp: g.timestamp,
           })),
         }));
+
+        // If direct peers are already in the room, trigger peer-joined immediately
+        room.participants.forEach((client) => {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'peer-joined', roomId }));
+          }
+        });
       } else if (type === 'join-room') {
-        // Fallback for direct participants
+        // Direct quick join without boundaries
         currentRoom = roomId;
         const room = getOrCreateRoom(roomId);
         room.participants.add(ws);
@@ -729,6 +736,9 @@ wss.on('connection', (ws) => {
             client.send(JSON.stringify({ type: 'peer-joined', roomId }));
           }
         });
+        if (room.hostSocket && room.hostSocket !== ws && room.hostSocket.readyState === WebSocket.OPEN) {
+          room.hostSocket.send(JSON.stringify({ type: 'peer-joined', roomId }));
+        }
       } else if (type === 'guest-knock') {
         currentRoom = roomId;
         clientGuestId = (guest && guest.id) || `guest-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;

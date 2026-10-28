@@ -157,6 +157,8 @@ function App() {
   const [isCreateRoomModalOpen, setIsCreateRoomModalOpen] = useState(false);
   const [newRoomInputCode, setNewRoomInputCode] = useState('');
   const [replyingTo, setReplyingTo] = useState(null); // { id, sender, content }
+  const [quickJoinCode, setQuickJoinCode] = useState('');
+  const [isQuickJoinModalOpen, setIsQuickJoinModalOpen] = useState(false);
   const [chatOnlineCount, setChatOnlineCount] = useState(1);
   const [typingUsers, setTypingUsers] = useState([]);
   const [isDraggingOverChat, setIsDraggingOverChat] = useState(false);
@@ -781,6 +783,47 @@ function App() {
   const handleStartInstantCall = (customRoomId = null) => {
     const roomId = customRoomId || `pcs-${Math.random().toString(36).substring(2, 9)}`;
     handleJoinCallRoom(roomId, true);
+  };
+
+  const handleQuickJoinCall = (customCode = null) => {
+    const raw = (customCode || quickJoinCode || '').trim().toLowerCase();
+    const clean = raw.replace(/^https?:\/\/[^\/]+\/?/, '').replace(/^\?room=/, '').replace(/^\?chat=/, '').replace(/^#/, '');
+    if (!clean) {
+      showToast('Please enter a room code');
+      return;
+    }
+    setIsQuickJoinModalOpen(false);
+    setIsGuestMode(false);
+    showToast(`Joining Instant Call: #${clean}`);
+    handleJoinCallRoom(clean, false);
+  };
+
+  const handleQuickJoinChat = (customCode = null) => {
+    const raw = (customCode || quickJoinCode || '').trim().toLowerCase();
+    const clean = raw.replace(/^https?:\/\/[^\/]+\/?/, '').replace(/^\?chat=/, '').replace(/^\?room=/, '').replace(/^#/, '');
+    if (!clean) {
+      showToast('Please enter a room code');
+      return;
+    }
+    setIsQuickJoinModalOpen(false);
+    handleConnectGlobalChat(clean);
+  };
+
+  const handleGuestDirectQuickJoin = (roomId) => {
+    const targetRoom = (roomId || activeCallRoom || '').trim().toLowerCase();
+    if (!targetRoom) {
+      showToast('No room code specified');
+      return;
+    }
+    if (guestName.trim()) {
+      sessionStorage.setItem('pcs_guest_name', guestName.trim());
+    }
+    if (guestOfficeId.trim()) {
+      sessionStorage.setItem('pcs_guest_office_id', guestOfficeId.trim());
+    }
+    setIsGuestMode(false);
+    showToast(`Quick Joined: #${targetRoom}`);
+    handleJoinCallRoom(targetRoom, false);
   };
 
   const handleJoinCallRoom = async (roomId, isHost = false) => {
@@ -2437,21 +2480,48 @@ function App() {
               </div>
             </div>
 
-            <form className="public-room-code-form" onSubmit={handleDirectRoomCodeSubmit}>
+            <div className="public-room-code-form">
               <div className="room-input-group">
                 <span className="material-symbols-outlined">key</span>
                 <input
                   type="text"
-                  placeholder="Enter Room Code (e.g. pcs-room-101)..."
+                  placeholder="Enter Room Code (e.g. general, standup, pcs-alpha)..."
                   value={publicDirectRoomInput}
                   onChange={(e) => setPublicDirectRoomInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleDirectRoomCodeSubmit(e);
+                    }
+                  }}
                 />
               </div>
-              <button type="submit" className="btn-direct-join">
-                <span>Join Directly</span>
-                <span className="material-symbols-outlined">login</span>
-              </button>
-            </form>
+              <div className="public-portal-buttons">
+                <button
+                  type="button"
+                  className="btn-direct-join"
+                  onClick={handleDirectRoomCodeSubmit}
+                  disabled={!publicDirectRoomInput.trim()}
+                  title="Direct Instant Video Call (No Wait)"
+                >
+                  <span className="material-symbols-outlined">videocam</span>
+                  <span>Join Call</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn-direct-chat-join"
+                  onClick={() => {
+                    const clean = publicDirectRoomInput.trim().replace(/^\?chat=/, '').replace(/^\?room=/, '');
+                    if (clean) handleConnectGlobalChat(clean);
+                  }}
+                  disabled={!publicDirectRoomInput.trim()}
+                  title="Direct Real-Time Chat & Sharing"
+                >
+                  <span className="material-symbols-outlined">forum</span>
+                  <span>Join Chat</span>
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className="public-meetings-grid">
@@ -3318,11 +3388,21 @@ function App() {
                     <div className="guest-checkin-actions">
                       <button
                         type="button"
+                        className="btn-quick-direct-join"
+                        onClick={() => handleGuestDirectQuickJoin(currentRoom)}
+                        title="Direct instant call with no waiting or host approval"
+                      >
+                        <span className="material-symbols-outlined">bolt</span>
+                        <span>Quick Join Call (No Boundaries)</span>
+                      </button>
+                      <button
+                        type="button"
                         className="btn-knock-join"
                         onClick={() => handleGuestKnock(currentRoom)}
+                        title="Send knock request for host verification"
                       >
                         <span className="material-symbols-outlined">meeting_room</span>
-                        <span>Knock & Join Directly</span>
+                        <span>Knock & Verify</span>
                       </button>
                     </div>
                   </div>
@@ -3357,14 +3437,25 @@ function App() {
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      className="btn-cancel-knock"
-                      onClick={handleCancelKnock}
-                    >
-                      <span className="material-symbols-outlined">close</span>
-                      <span>Cancel Join Request</span>
-                    </button>
+                    <div className="knocking-flow-actions">
+                      <button
+                        type="button"
+                        className="btn-bypass-knock"
+                        onClick={() => handleGuestDirectQuickJoin(currentRoom)}
+                        title="Bypass waiting and connect to call immediately"
+                      >
+                        <span className="material-symbols-outlined">bolt</span>
+                        <span>Direct Quick Join Now (No Wait)</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-cancel-knock"
+                        onClick={handleCancelKnock}
+                      >
+                        <span className="material-symbols-outlined">close</span>
+                        <span>Cancel Request</span>
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -3838,6 +3929,15 @@ function App() {
             </div>
             <button
               type="button"
+              className="btn-quick-join-header"
+              onClick={() => setIsQuickJoinModalOpen(true)}
+              title="Quick Join with Room Code (Call or Chat with zero boundaries)"
+            >
+              <span className="material-symbols-outlined">bolt</span>
+              <span>Quick Join</span>
+            </button>
+            <button
+              type="button"
               className="btn-global-chat"
               onClick={handleOpenGlobalChat}
               title="Create or Join Global Online Work Chat Room"
@@ -3870,6 +3970,64 @@ function App() {
 
       {/* Main Workspace */}
       <main className="workspace-container">
+        {/* Quick Direct Join Hero Strip: Join Call or Chat from Room Code with Zero Boundaries */}
+        <div className="quick-join-hero-strip">
+          <div className="quick-join-hero-left">
+            <span className="material-symbols-outlined bolt-icon">bolt</span>
+            <div className="quick-join-text">
+              <span className="quick-join-title">Quick Direct Join</span>
+              <span className="quick-join-desc">Direct access to live calls and chat rooms by room code. No barriers or waiting.</span>
+            </div>
+          </div>
+          <div className="quick-join-hero-controls">
+            <div className="quick-join-input-wrap">
+              <span className="material-symbols-outlined input-prefix">tag</span>
+              <input
+                type="text"
+                placeholder="Enter room code (e.g. general, standup, alpha)..."
+                value={quickJoinCode}
+                onChange={(e) => setQuickJoinCode(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleQuickJoinCall();
+                  }
+                }}
+              />
+              {quickJoinCode && (
+                <button
+                  type="button"
+                  className="btn-clear-code"
+                  onClick={() => setQuickJoinCode('')}
+                  title="Clear room code"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              className="btn-quick-call-action"
+              onClick={() => handleQuickJoinCall()}
+              disabled={!quickJoinCode.trim()}
+              title="Join Instant Call directly with this code (No waiting room)"
+            >
+              <span className="material-symbols-outlined">videocam</span>
+              <span>Join Call</span>
+            </button>
+            <button
+              type="button"
+              className="btn-quick-chat-action"
+              onClick={() => handleQuickJoinChat()}
+              disabled={!quickJoinCode.trim()}
+              title="Join Work Chat directly with this code"
+            >
+              <span className="material-symbols-outlined">forum</span>
+              <span>Join Chat</span>
+            </button>
+          </div>
+        </div>
+
         {/* Workspace Title & Executive Utility Strip */}
         <div className="workspace-header">
           <div>
@@ -5230,6 +5388,15 @@ function App() {
         <button
           type="button"
           className="mobile-nav-item"
+          onClick={() => setIsQuickJoinModalOpen(true)}
+          title="Quick Join with Room Code"
+        >
+          <span className="material-symbols-outlined">bolt</span>
+          <span>Join</span>
+        </button>
+        <button
+          type="button"
+          className="mobile-nav-item"
           onClick={handleOpenGlobalChat}
           title="Global Online Chat & Work Room"
         >
@@ -5515,6 +5682,105 @@ function App() {
               </>
             );
           })()}
+        </div>
+      )}
+
+      {/* Direct Quick Join Modal - Instant Call & Chat with Zero Boundaries */}
+      {isQuickJoinModalOpen && (
+        <div className="create-room-modal-overlay" onClick={() => setIsQuickJoinModalOpen(false)}>
+          <div className="create-room-modal-card quick-join-card" onClick={(e) => e.stopPropagation()}>
+            <div className="create-room-modal-header">
+              <div className="modal-title-with-icon">
+                <span className="material-symbols-outlined modal-header-icon" style={{ background: '#fef08a', color: '#854d0e' }}>bolt</span>
+                <div>
+                  <h3>Direct Quick Join</h3>
+                  <p>Join an Instant Call or Work Chat directly using a room code with zero boundaries.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn-modal-close"
+                onClick={() => setIsQuickJoinModalOpen(false)}
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="create-room-modal-body">
+              <div className="join-room-code-section" style={{ border: 'none', padding: 0 }}>
+                <h4>Enter Room Code</h4>
+                <p>Paste a room link or type the code (e.g. general, standup, alpha-7) to jump right in.</p>
+                <div className="join-room-form">
+                  <div className="join-input-wrap">
+                    <span className="material-symbols-outlined">tag</span>
+                    <input
+                      type="text"
+                      placeholder="e.g. general, team-sync, pcs-alpha"
+                      value={quickJoinCode}
+                      onChange={(e) => setQuickJoinCode(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleQuickJoinCall();
+                        }
+                      }}
+                      autoFocus
+                    />
+                    {quickJoinCode && (
+                      <button
+                        type="button"
+                        className="btn-clear-inline"
+                        onClick={() => setQuickJoinCode('')}
+                        title="Clear input"
+                      >
+                        <span className="material-symbols-outlined">close</span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="quick-join-dual-buttons">
+                    <button
+                      type="button"
+                      className="btn-modal-quick-call"
+                      onClick={() => handleQuickJoinCall()}
+                      disabled={!quickJoinCode.trim()}
+                      title="Join video/audio call with this code directly"
+                    >
+                      <span className="material-symbols-outlined">videocam</span>
+                      <span>Join Call Directly</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-modal-quick-chat"
+                      onClick={() => handleQuickJoinChat()}
+                      disabled={!quickJoinCode.trim()}
+                      title="Join text/image chat with this code"
+                    >
+                      <span className="material-symbols-outlined">forum</span>
+                      <span>Join Work Chat</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="create-room-divider">
+                <span>OR START A FRESH INSTANT ROOM</span>
+              </div>
+
+              <div className="quick-general-section">
+                <button
+                  type="button"
+                  className="btn-primary-create-room"
+                  onClick={() => {
+                    setIsQuickJoinModalOpen(false);
+                    handleStartInstantCall();
+                  }}
+                >
+                  <span className="material-symbols-outlined">videocam</span>
+                  <span>Start New Instant Call</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
