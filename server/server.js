@@ -822,6 +822,20 @@ wss.on('connection', (ws) => {
             }
           });
         }
+      } else if (type === 'raise-hand') {
+        if (currentRoom && rooms.has(currentRoom)) {
+          const room = rooms.get(currentRoom);
+          room.participants.forEach((client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'raise-hand',
+                roomId: currentRoom,
+                isRaised: Boolean(data.isRaised),
+                senderName: data.senderName || 'Participant',
+              }));
+            }
+          });
+        }
       } else if (type === 'chat-message') {
         const targetRoom = (roomId || currentChatRoom || 'general').trim().toLowerCase();
         const { message: chatMsg } = data;

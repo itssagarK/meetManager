@@ -88,7 +88,7 @@ function App() {
   });
   const alertedMeetingsRef = useRef(new Set());
 
-  // WebRTC Video Calling ("Instant PCS Meet Room")
+  // WebRTC Video Calling ("Instant PCS Meet Room" - Google Meet Experience)
   const [activeCallRoom, setActiveCallRoom] = useState(null);
   const [isCallConnected, setIsCallConnected] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(false);
@@ -99,6 +99,15 @@ function App() {
   const [iceServersList, setIceServersList] = useState(RTC_CONFIG.iceServers);
   const [callQuality, setCallQuality] = useState('connecting'); // 'connecting' | 'stable' | 'relayed' | 'reconnecting' | 'failed'
   const [publicBaseUrl, setPublicBaseUrl] = useState('');
+  const [callDuration, setCallDuration] = useState(0);
+  const [isHandRaised, setIsHandRaised] = useState(false);
+  const [peerHandRaised, setPeerHandRaised] = useState(false);
+  const [meetingDrawerTab, setMeetingDrawerTab] = useState(null); // null | 'chat' | 'people' | 'info'
+  const [meetingLayout, setMeetingLayout] = useState('grid'); // 'grid' | 'spotlight'
+  const [pinnedParticipant, setPinnedParticipant] = useState(null); // null | 'local' | 'remote'
+  const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
+  const [isRemoteSpeaking, setIsRemoteSpeaking] = useState(false);
+  const [isCallFullscreen, setIsCallFullscreen] = useState(false);
   const [isGuestMode, setIsGuestMode] = useState(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
@@ -174,6 +183,7 @@ function App() {
   const remoteVideoRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const wsSignalingRef = useRef(null);
   const iceCandidatesQueue = useRef([]);
@@ -686,6 +696,45 @@ function App() {
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
+  const formatMeetingDuration = (totalSeconds) => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    if (hrs > 0) {
+      return `${String(hrs).padStart(2, '0')}:${String(remMins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
+
+  const handleToggleRaiseHand = () => {
+    const nextRaised = !isHandRaised;
+    setIsHandRaised(nextRaised);
+    if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN) {
+      wsSignalingRef.current.send(
+        JSON.stringify({
+          type: 'raise-hand',
+          roomId: activeCallRoom,
+          isRaised: nextRaised,
+          senderName: guestName.trim() || (isHostInCall ? 'Host' : 'Participant'),
+        })
+      );
+    }
+    showToast(nextRaised ? 'Hand raised' : 'Hand lowered');
+  };
+
+  const handleToggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen()
+        .then(() => setIsCallFullscreen(true))
+        .catch((err) => console.warn('Fullscreen request failed:', err));
+    } else {
+      document.exitFullscreen()
+        .then(() => setIsCallFullscreen(false))
+        .catch((err) => console.warn('Exit fullscreen failed:', err));
+    }
+  };
+
   // WebRTC Video Calling ("Instant PCS Meet Room") Lifecycle
   const createPeerConnection = (roomId) => {
     if (peerConnectionRef.current) {
@@ -705,8 +754,11 @@ function App() {
     }
 
     pc.ontrack = (event) => {
-      if (remoteVideoRef.current && event.streams && event.streams[0]) {
-        remoteVideoRef.current.srcObject = event.streams[0];
+      if (event.streams && event.streams[0]) {
+        remoteStreamRef.current = event.streams[0];
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = event.streams[0];
+        }
         setIsCallConnected(true);
         setCallStatusText('Connected with peer');
       }
@@ -955,6 +1007,11 @@ function App() {
                 return [...prev, data.message];
               });
             }
+          } else if (data.type === 'raise-hand') {
+            setPeerHandRaised(Boolean(data.isRaised));
+            if (data.isRaised) {
+              showToast(`${data.senderName || 'Participant'} raised hand`);
+            }
           }
         } catch (err) {
           console.error('Signaling message handling error:', err);
@@ -1088,6 +1145,19 @@ function App() {
     setPendingKnocks([]);
     setIsHostInCall(false);
     setGuestKnockStatus('idle');
+    setCallDuration(0);
+    setIsHandRaised(false);
+    setPeerHandRaised(false);
+    setMeetingDrawerTab(null);
+    setMeetingLayout('grid');
+    setPinnedParticipant(null);
+    setIsLocalSpeaking(false);
+    setIsRemoteSpeaking(false);
+    setIsCallFullscreen(false);
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach((track) => track.stop());
+      remoteStreamRef.current = null;
+    }
 
     if (window.location.search.includes('room=')) {
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -1150,6 +1220,7 @@ function App() {
         } else if (data.type === 'guest-admitted') {
           showToast('Admitted by host! Connecting video call...');
           setGuestKnockStatus('admitted');
+          setIsGuestMode(false);
           setActiveCallRoom(roomId);
           setCallStatusText('Host admitted you. Activating camera & connecting...');
 
@@ -1240,6 +1311,11 @@ function App() {
               if (prev.some((m) => m.id === data.message.id)) return prev;
               return [...prev, data.message];
             });
+          }
+        } else if (data.type === 'raise-hand') {
+          setPeerHandRaised(Boolean(data.isRaised));
+          if (data.isRaised) {
+            showToast(`${data.senderName || 'Participant'} raised hand`);
           }
         }
       } catch (err) {
@@ -1974,12 +2050,121 @@ function App() {
     }
   }, [chatMessages, isRoomChatOpen]);
 
-  // Sync local stream with local video element when room or minimized state changes
+  // Sync local and remote streams with video elements on state/layout change
   useEffect(() => {
-    if (localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
+    if (localVideoRef.current && (screenStreamRef.current || localStreamRef.current)) {
+      localVideoRef.current.srcObject = screenStreamRef.current || localStreamRef.current;
     }
-  }, [activeCallRoom, isCallMinimized]);
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    }
+  }, [activeCallRoom, isCallMinimized, meetingLayout, pinnedParticipant]);
+
+  // Google Meet In-Call Duration Clock
+  useEffect(() => {
+    let timer = null;
+    if (activeCallRoom) {
+      timer = setInterval(() => {
+        setCallDuration((prev) => prev + 1);
+      }, 1000);
+    } else {
+      setCallDuration(0);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [activeCallRoom]);
+
+  // Google Meet Real-Time Audio Speaking Halo Detection (Web Audio API)
+  useEffect(() => {
+    if (!activeCallRoom) {
+      setIsLocalSpeaking(false);
+      setIsRemoteSpeaking(false);
+      return;
+    }
+    let audioCtx = null;
+    let animId = null;
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      audioCtx = new AudioContextClass();
+
+      let localAnalyser = null;
+      let remoteAnalyser = null;
+
+      if (localStreamRef.current && localStreamRef.current.getAudioTracks().length > 0) {
+        try {
+          const src = audioCtx.createMediaStreamSource(localStreamRef.current);
+          localAnalyser = audioCtx.createAnalyser();
+          localAnalyser.fftSize = 256;
+          src.connect(localAnalyser);
+        } catch (e) {}
+      }
+
+      if (remoteStreamRef.current && remoteStreamRef.current.getAudioTracks().length > 0) {
+        try {
+          const src = audioCtx.createMediaStreamSource(remoteStreamRef.current);
+          remoteAnalyser = audioCtx.createAnalyser();
+          remoteAnalyser.fftSize = 256;
+          src.connect(remoteAnalyser);
+        } catch (e) {}
+      }
+
+      const checkVolume = () => {
+        if (localAnalyser && !isAudioMuted) {
+          const arr = new Uint8Array(localAnalyser.frequencyBinCount);
+          localAnalyser.getByteFrequencyData(arr);
+          const avg = arr.reduce((acc, v) => acc + v, 0) / arr.length;
+          setIsLocalSpeaking(avg > 18);
+        } else {
+          setIsLocalSpeaking(false);
+        }
+
+        if (remoteAnalyser) {
+          const arr = new Uint8Array(remoteAnalyser.frequencyBinCount);
+          remoteAnalyser.getByteFrequencyData(arr);
+          const avg = arr.reduce((acc, v) => acc + v, 0) / arr.length;
+          setIsRemoteSpeaking(avg > 18);
+        } else {
+          setIsRemoteSpeaking(false);
+        }
+
+        animId = requestAnimationFrame(checkVolume);
+      };
+
+      animId = requestAnimationFrame(checkVolume);
+    } catch (err) {
+      console.warn('Audio detection not available:', err);
+    }
+
+    return () => {
+      if (animId) cancelAnimationFrame(animId);
+      if (audioCtx) {
+        try {
+          audioCtx.close();
+        } catch (e) {}
+      }
+    };
+  }, [activeCallRoom, isAudioMuted, isCallConnected]);
+
+  // Google Meet Keyboard Shortcuts: Ctrl+D for Mic, Ctrl+E for Camera
+  useEffect(() => {
+    if (!activeCallRoom) return;
+    const handleKeyDown = (e) => {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault();
+        handleToggleAudio();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
+        e.preventDefault();
+        handleToggleVideo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeCallRoom, isAudioMuted, isVideoOff]);
 
   // Fetch production ICE configuration (STUN + TURN relay + Public URL) from backend
   useEffect(() => {
@@ -3293,8 +3478,8 @@ function App() {
     );
   }
 
-  // Dedicated Guest Video Room (When external user joins via ?room=...)
-  if (isGuestMode) {
+  // Dedicated Guest Video Room (When external user joins via ?room=... and not yet in call)
+  if (isGuestMode && !activeCallRoom) {
     const currentRoom = activeCallRoom || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('room') : '');
     return (
       <div className="guest-screen-wrapper">
@@ -5198,158 +5383,727 @@ function App() {
         </div>
       )}
 
-      {/* Floating WebRTC Video Call Dock Panel */}
+      {/* Google Meet Professional Calling Stage & Floating Controls */}
       {activeCallRoom && (
-        <div className={`call-dock-panel ${isCallMinimized ? 'minimized' : ''}`}>
-          <div className="call-dock-header">
-            <div className="call-dock-title">
-              <span className="live-call-indicator"></span>
-              <span className="room-label">Room: <strong>{activeCallRoom}</strong></span>
-              <span className={`call-quality-pill ${callQuality}`} title={`WebRTC Status: ${callQuality}`}>
-                <span className="quality-dot"></span>
-                <span className="quality-text">
-                  {callQuality === 'stable' && 'P2P Direct'}
-                  {callQuality === 'relayed' && 'TURN Relay'}
-                  {callQuality === 'reconnecting' && 'Reconnecting'}
-                  {callQuality === 'connecting' && 'Connecting'}
-                  {callQuality === 'failed' && 'Offline'}
-                </span>
-              </span>
-            </div>
-            <div className="call-dock-actions">
-              <button
-                type="button"
-                className={`call-dock-btn ${isRoomChatOpen ? 'active-chat' : ''}`}
-                onClick={() => setIsRoomChatOpen(!isRoomChatOpen)}
-                title="Toggle Room Chat, Links & Images"
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>forum</span>
-                <span>Chat ({chatMessages.length})</span>
-              </button>
-              <button
-                type="button"
-                className="call-dock-btn"
-                onClick={handleCopyGuestLink}
-                title="Copy guest invite link"
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>content_copy</span>
-                <span>Copy Link</span>
-              </button>
-              <button
-                type="button"
-                className="call-dock-btn"
-                onClick={() => setIsCallMinimized(!isCallMinimized)}
-                title={isCallMinimized ? 'Maximize Call Window' : 'Minimize Call Window'}
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
-                  {isCallMinimized ? 'expand_less' : 'expand_more'}
-                </span>
-              </button>
-              <button
-                type="button"
-                className="call-dock-btn close-call-btn"
-                onClick={handleEndCall}
-                title="End Video Call"
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
-              </button>
-            </div>
-          </div>
-
-          {!isCallMinimized && (
-            <div className="call-dock-body">
-              <div className="call-video-grid">
-                {/* Remote Participant Video Card */}
-                <div className="video-card remote-video-card">
-                  <video
-                    ref={remoteVideoRef}
-                    autoPlay
-                    playsInline
-                    className="video-stream remote-stream"
-                  />
-                  {!isCallConnected && (
-                    <div className="video-waiting-overlay">
-                      <span className="material-symbols-outlined waiting-icon">hourglass_top</span>
-                      <div className="waiting-title">Waiting for peer...</div>
-                      <div className="waiting-subtitle">{callStatusText}</div>
-                      <button
-                        type="button"
-                        className="btn-copy-invite"
-                        onClick={handleCopyGuestLink}
-                      >
-                        <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>link</span>
-                        <span>Copy Guest Link</span>
-                      </button>
-                    </div>
-                  )}
-                  <div className="video-participant-badge">Remote Guest</div>
+        <div className={`google-meet-stage ${isCallMinimized ? 'meet-pip-mode' : 'meet-stage-fullscreen'} ${meetingDrawerTab ? 'with-drawer' : ''}`}>
+          {isCallMinimized ? (
+            /* Minimized Picture-in-Picture Mode (Multitask in Dashboard) */
+            <div className="meet-pip-container">
+              <div className="meet-pip-header">
+                <div className="meet-pip-title">
+                  <span className="live-call-indicator"></span>
+                  <span className="meet-pip-room">#{activeCallRoom}</span>
+                  <span className="meet-pip-timer">{formatMeetingDuration(callDuration)}</span>
                 </div>
-
-                {/* Local Self Video Card */}
-                <div className="video-card local-video-card">
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="video-stream local-stream"
-                  />
-                  {isVideoOff && (
-                    <div className="video-off-overlay">
-                      <span className="material-symbols-outlined">videocam_off</span>
-                      <span>Camera Off</span>
-                    </div>
-                  )}
-                  <div className="video-participant-badge">
-                    You {isAudioMuted ? '(Muted)' : ''}
-                  </div>
+                <div className="meet-pip-actions">
+                  <button
+                    type="button"
+                    className="meet-pip-btn"
+                    onClick={() => setIsCallMinimized(false)}
+                    title="Expand to Full Google Meet Stage"
+                  >
+                    <span className="material-symbols-outlined">open_in_full</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="meet-pip-btn pip-close-btn"
+                    onClick={handleEndCall}
+                    title="End Call"
+                  >
+                    <span className="material-symbols-outlined">call_end</span>
+                  </button>
                 </div>
               </div>
-
-              {/* Call Controls Bar */}
-              <div className="call-dock-controls">
+              <div className="meet-pip-video-wrap">
+                {isCallConnected ? (
+                  <video ref={remoteVideoRef} autoPlay playsInline className="meet-pip-video" />
+                ) : isVideoOff ? (
+                  <div className="meet-pip-avatar">
+                    <span>{guestName ? guestName.charAt(0).toUpperCase() : 'Y'}</span>
+                  </div>
+                ) : (
+                  <video ref={localVideoRef} autoPlay playsInline muted className={`meet-pip-video ${isScreenSharing ? '' : 'local-mirror'}`} />
+                )}
+                {isCallConnected && (
+                  <div className="meet-pip-thumb">
+                    {isVideoOff ? (
+                      <div className="meet-pip-thumb-avatar">Y</div>
+                    ) : (
+                      <video ref={localVideoRef} autoPlay playsInline muted className={`meet-pip-thumb-video ${isScreenSharing ? '' : 'local-mirror'}`} />
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="meet-pip-controls">
                 <button
                   type="button"
-                  className={`call-ctl-btn ${isAudioMuted ? 'active-mute' : ''}`}
+                  className={`meet-pip-ctl-btn ${isAudioMuted ? 'muted' : ''}`}
                   onClick={handleToggleAudio}
-                  title={isAudioMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+                  title={isAudioMuted ? 'Unmute' : 'Mute'}
                 >
-                  <span className="material-symbols-outlined">
-                    {isAudioMuted ? 'mic_off' : 'mic'}
-                  </span>
-                  <span>{isAudioMuted ? 'Unmute' : 'Mute'}</span>
+                  <span className="material-symbols-outlined">{isAudioMuted ? 'mic_off' : 'mic'}</span>
                 </button>
                 <button
                   type="button"
-                  className={`call-ctl-btn ${isVideoOff ? 'active-mute' : ''}`}
+                  className={`meet-pip-ctl-btn ${isVideoOff ? 'muted' : ''}`}
                   onClick={handleToggleVideo}
-                  title={isVideoOff ? 'Turn Camera On' : 'Turn Camera Off'}
+                  title={isVideoOff ? 'Start Camera' : 'Stop Camera'}
                 >
-                  <span className="material-symbols-outlined">
-                    {isVideoOff ? 'videocam_off' : 'videocam'}
-                  </span>
-                  <span>{isVideoOff ? 'Start Video' : 'Stop Video'}</span>
+                  <span className="material-symbols-outlined">{isVideoOff ? 'videocam_off' : 'videocam'}</span>
                 </button>
                 <button
                   type="button"
-                  className={`call-ctl-btn ${isScreenSharing ? 'active-share' : ''}`}
-                  onClick={handleToggleScreenShare}
-                  title={isScreenSharing ? 'Stop Screen Sharing' : 'Share Screen'}
+                  className="meet-pip-ctl-btn expand-btn"
+                  onClick={() => setIsCallMinimized(false)}
+                  title="Expand to Full Google Meet Stage"
                 >
-                  <span className="material-symbols-outlined">
-                    {isScreenSharing ? 'stop_screen_share' : 'screen_share'}
-                  </span>
-                  <span>{isScreenSharing ? 'Stop Share' : 'Share Screen'}</span>
+                  <span className="material-symbols-outlined">fullscreen</span>
                 </button>
                 <button
                   type="button"
-                  className="call-ctl-btn end-call-btn"
+                  className="meet-pip-ctl-btn end-btn"
                   onClick={handleEndCall}
                   title="Leave Call"
                 >
                   <span className="material-symbols-outlined">call_end</span>
-                  <span>End</span>
                 </button>
+              </div>
+            </div>
+          ) : (
+            /* Full Immersive Google Meet Stage */
+            <div className="meet-stage-inner">
+              {/* Top Header Bar */}
+              <header className="meet-top-bar">
+                <div className="meet-top-left">
+                  <div className="meet-brand-chip">
+                    <span className="material-symbols-outlined brand-meet-icon">video_camera_front</span>
+                    <span className="meet-room-code-tag">#{activeCallRoom}</span>
+                  </div>
+                  <div className="meet-clock-chip">
+                    <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>schedule</span>
+                    <span>{formatMeetingDuration(callDuration)}</span>
+                  </div>
+                  <div className={`meet-quality-badge ${callQuality}`} title={`Network Status: ${callQuality}`}>
+                    <span className="quality-dot"></span>
+                    <span>{callQuality === 'stable' ? 'P2P Direct' : callQuality === 'relayed' ? 'Relay' : 'Connecting'}</span>
+                  </div>
+                  <div className="meet-e2e-badge" title="WebRTC End-to-End Direct Connection">
+                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>lock</span>
+                    <span>Direct P2P</span>
+                  </div>
+                </div>
+
+                <div className="meet-top-right">
+                  <button
+                    type="button"
+                    className={`meet-top-btn ${meetingLayout === 'spotlight' ? 'active' : ''}`}
+                    onClick={() => {
+                      setMeetingLayout((prev) => (prev === 'grid' ? 'spotlight' : 'grid'));
+                      if (meetingLayout === 'grid') setPinnedParticipant('remote');
+                      else setPinnedParticipant(null);
+                    }}
+                    title={meetingLayout === 'grid' ? 'Switch to Spotlight View' : 'Switch to Grid View'}
+                  >
+                    <span className="material-symbols-outlined">
+                      {meetingLayout === 'grid' ? 'featured_video' : 'grid_view'}
+                    </span>
+                    <span>{meetingLayout === 'grid' ? 'Spotlight' : 'Grid'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="meet-top-btn"
+                    onClick={() => setIsCallMinimized(true)}
+                    title="Minimize to Picture-in-Picture (Continue in Dashboard)"
+                  >
+                    <span className="material-symbols-outlined">picture_in_picture_alt</span>
+                    <span>Minimize</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="meet-top-btn icon-only"
+                    onClick={handleToggleFullscreen}
+                    title={isCallFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                  >
+                    <span className="material-symbols-outlined">
+                      {isCallFullscreen ? 'fullscreen_exit' : 'fullscreen'}
+                    </span>
+                  </button>
+                </div>
+              </header>
+
+              {/* Center Stage Body */}
+              <div className="meet-stage-body">
+                <div className={`meet-video-canvas ${meetingLayout === 'spotlight' ? 'spotlight-mode' : 'grid-mode'} ${isCallConnected ? 'two-participants' : 'one-participant'}`}>
+                  {/* Remote Video Tile */}
+                  <div
+                    className={`meet-video-tile remote-tile ${isRemoteSpeaking ? 'speaking' : ''} ${pinnedParticipant === 'remote' ? 'is-pinned-hero' : pinnedParticipant === 'local' ? 'is-pinned-thumb' : ''}`}
+                  >
+                    <video
+                      ref={remoteVideoRef}
+                      autoPlay
+                      playsInline
+                      className="meet-video-element remote-stream"
+                    />
+                    {!isCallConnected && (
+                      <div className="meet-waiting-hud">
+                        <div className="meet-waiting-pulse-avatar">
+                          <span className="material-symbols-outlined">group_add</span>
+                        </div>
+                        <h3 className="meet-waiting-title">Ready for your meeting</h3>
+                        <p className="meet-waiting-desc">
+                          {callStatusText || 'Waiting for other participants to join the call...'}
+                        </p>
+                        <div className="meet-waiting-actions">
+                          <button
+                            type="button"
+                            className="meet-waiting-copy-btn"
+                            onClick={handleCopyGuestLink}
+                          >
+                            <span className="material-symbols-outlined">content_copy</span>
+                            <span>Copy Joining Link</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {/* Remote Participant Bottom Pill */}
+                    <div className="meet-name-pill">
+                      <span className="mic-badge">
+                        <span className="material-symbols-outlined">
+                          {isCallConnected ? 'mic' : 'mic_off'}
+                        </span>
+                      </span>
+                      <span className="participant-title">
+                        {guestName ? `${guestName} (Remote)` : 'Remote Participant'}
+                      </span>
+                      {peerHandRaised && (
+                        <span className="raised-hand-badge">
+                          <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>
+                          <span>Hand raised</span>
+                        </span>
+                      )}
+                    </div>
+                    {/* Pin button */}
+                    <button
+                      type="button"
+                      className="meet-tile-pin-btn"
+                      onClick={() => {
+                        if (pinnedParticipant === 'remote') {
+                          setPinnedParticipant(null);
+                          setMeetingLayout('grid');
+                        } else {
+                          setPinnedParticipant('remote');
+                          setMeetingLayout('spotlight');
+                        }
+                      }}
+                      title={pinnedParticipant === 'remote' ? 'Unpin' : 'Pin to main view'}
+                    >
+                      <span className="material-symbols-outlined">
+                        {pinnedParticipant === 'remote' ? 'keep_off' : 'push_pin'}
+                      </span>
+                    </button>
+                  </div>
+
+                  {/* Local Video Tile */}
+                  <div
+                    className={`meet-video-tile local-tile ${isLocalSpeaking ? 'speaking' : ''} ${pinnedParticipant === 'local' ? 'is-pinned-hero' : pinnedParticipant === 'remote' ? 'is-pinned-thumb' : ''}`}
+                  >
+                    {isVideoOff ? (
+                      <div className="meet-avatar-placeholder">
+                        <div className={`meet-avatar-circle local-avatar-circle ${isLocalSpeaking ? 'pulse-speaking' : ''}`}>
+                          <span>{guestName ? guestName.charAt(0).toUpperCase() : (isHostInCall ? 'H' : 'Y')}</span>
+                        </div>
+                        <div className="meet-avatar-label">Camera is off</div>
+                      </div>
+                    ) : (
+                      <video
+                        ref={localVideoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className={`meet-video-element ${isScreenSharing ? '' : 'local-mirror'}`}
+                      />
+                    )}
+                    {/* Local Participant Bottom Pill */}
+                    <div className="meet-name-pill">
+                      <span className={`mic-badge ${isAudioMuted ? 'muted' : ''}`}>
+                        <span className="material-symbols-outlined">
+                          {isAudioMuted ? 'mic_off' : 'mic'}
+                        </span>
+                      </span>
+                      <span className="participant-title">
+                        You {isHostInCall ? '(Host)' : ''}
+                      </span>
+                      {isHandRaised && (
+                        <span className="raised-hand-badge">
+                          <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>
+                          <span>You raised hand</span>
+                        </span>
+                      )}
+                    </div>
+                    {/* Pin button */}
+                    <button
+                      type="button"
+                      className="meet-tile-pin-btn"
+                      onClick={() => {
+                        if (pinnedParticipant === 'local') {
+                          setPinnedParticipant(null);
+                          setMeetingLayout('grid');
+                        } else {
+                          setPinnedParticipant('local');
+                          setMeetingLayout('spotlight');
+                        }
+                      }}
+                      title={pinnedParticipant === 'local' ? 'Unpin' : 'Pin to main view'}
+                    >
+                      <span className="material-symbols-outlined">
+                        {pinnedParticipant === 'local' ? 'keep_off' : 'push_pin'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Pending Knock Banner for Host */}
+                {pendingKnocks.length > 0 && isHostInCall && (
+                  <div className="meet-knocking-alert-strip">
+                    <span className="material-symbols-outlined alert-icon">doorbell</span>
+                    <div className="knocking-text">
+                      <strong>{pendingKnocks[0].name}</strong> ({pendingKnocks[0].officeId}) wants to join this meeting.
+                    </div>
+                    <div className="knocking-btns">
+                      <button
+                        type="button"
+                        className="btn-admit"
+                        onClick={() => handleAdmitKnockGuest(pendingKnocks[0].id)}
+                      >
+                        Admit
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-deny"
+                        onClick={() => handleDenyKnockGuest(pendingKnocks[0].id)}
+                      >
+                        Deny
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Google Meet Floating Bottom Pill Bar */}
+                <footer className="meet-bottom-pill-dock">
+                  {/* Audio Toggle */}
+                  <button
+                    type="button"
+                    className={`meet-dock-btn ${isAudioMuted ? 'btn-danger' : ''}`}
+                    onClick={handleToggleAudio}
+                    title={isAudioMuted ? 'Turn on microphone (Ctrl+D)' : 'Turn off microphone (Ctrl+D)'}
+                  >
+                    <span className="material-symbols-outlined">
+                      {isAudioMuted ? 'mic_off' : 'mic'}
+                    </span>
+                  </button>
+
+                  {/* Video Toggle */}
+                  <button
+                    type="button"
+                    className={`meet-dock-btn ${isVideoOff ? 'btn-danger' : ''}`}
+                    onClick={handleToggleVideo}
+                    title={isVideoOff ? 'Turn on camera (Ctrl+E)' : 'Turn off camera (Ctrl+E)'}
+                  >
+                    <span className="material-symbols-outlined">
+                      {isVideoOff ? 'videocam_off' : 'videocam'}
+                    </span>
+                  </button>
+
+                  {/* Screen Share */}
+                  <button
+                    type="button"
+                    className={`meet-dock-btn ${isScreenSharing ? 'btn-active-blue' : ''}`}
+                    onClick={handleToggleScreenShare}
+                    title={isScreenSharing ? 'Stop presenting' : 'Present now / Share screen'}
+                  >
+                    <span className="material-symbols-outlined">
+                      {isScreenSharing ? 'stop_screen_share' : 'present_to_all'}
+                    </span>
+                  </button>
+
+                  {/* Raise Hand */}
+                  <button
+                    type="button"
+                    className={`meet-dock-btn ${isHandRaised ? 'btn-active-amber' : ''}`}
+                    onClick={handleToggleRaiseHand}
+                    title={isHandRaised ? 'Lower hand' : 'Raise hand'}
+                  >
+                    <span className="material-symbols-outlined">front_hand</span>
+                  </button>
+
+                  {/* In-Call Chat */}
+                  <button
+                    type="button"
+                    className={`meet-dock-btn ${meetingDrawerTab === 'chat' ? 'btn-active-blue' : ''}`}
+                    onClick={() => {
+                      setMeetingDrawerTab((prev) => (prev === 'chat' ? null : 'chat'));
+                      handleLoadRoomMessages(activeCallRoom);
+                    }}
+                    title="In-call messages"
+                  >
+                    <span className="material-symbols-outlined">chat</span>
+                    {chatMessages.length > 0 && (
+                      <span className="dock-badge">{chatMessages.length}</span>
+                    )}
+                  </button>
+
+                  {/* People */}
+                  <button
+                    type="button"
+                    className={`meet-dock-btn ${meetingDrawerTab === 'people' ? 'btn-active-blue' : ''}`}
+                    onClick={() => setMeetingDrawerTab((prev) => (prev === 'people' ? null : 'people'))}
+                    title="People"
+                  >
+                    <span className="material-symbols-outlined">group</span>
+                    <span className="dock-badge">{isCallConnected ? '2' : '1'}</span>
+                  </button>
+
+                  {/* Meeting Info */}
+                  <button
+                    type="button"
+                    className={`meet-dock-btn ${meetingDrawerTab === 'info' ? 'btn-active-blue' : ''}`}
+                    onClick={() => setMeetingDrawerTab((prev) => (prev === 'info' ? null : 'info'))}
+                    title="Meeting details"
+                  >
+                    <span className="material-symbols-outlined">info</span>
+                  </button>
+
+                  {/* End / Leave Call */}
+                  <button
+                    type="button"
+                    className="meet-dock-btn meet-end-btn"
+                    onClick={handleEndCall}
+                    title="Leave call"
+                  >
+                    <span className="material-symbols-outlined">call_end</span>
+                  </button>
+                </footer>
+
+                {/* Right Slide-Out Side Drawer */}
+                {meetingDrawerTab && (
+                  <aside className="meet-side-drawer">
+                    <div className="meet-drawer-header">
+                      <h3 className="meet-drawer-title">
+                        {meetingDrawerTab === 'chat' && 'In-call messages'}
+                        {meetingDrawerTab === 'people' && `People (${isCallConnected ? '2' : '1'})`}
+                        {meetingDrawerTab === 'info' && 'Meeting details'}
+                      </h3>
+                      <div className="meet-drawer-hdr-actions">
+                        <div className="meet-drawer-tab-switch">
+                          <button
+                            type="button"
+                            className={`drawer-tab-btn ${meetingDrawerTab === 'chat' ? 'active' : ''}`}
+                            onClick={() => setMeetingDrawerTab('chat')}
+                            title="Messages"
+                          >
+                            <span className="material-symbols-outlined">chat</span>
+                          </button>
+                          <button
+                            type="button"
+                            className={`drawer-tab-btn ${meetingDrawerTab === 'people' ? 'active' : ''}`}
+                            onClick={() => setMeetingDrawerTab('people')}
+                            title="People"
+                          >
+                            <span className="material-symbols-outlined">group</span>
+                          </button>
+                          <button
+                            type="button"
+                            className={`drawer-tab-btn ${meetingDrawerTab === 'info' ? 'active' : ''}`}
+                            onClick={() => setMeetingDrawerTab('info')}
+                            title="Details"
+                          >
+                            <span className="material-symbols-outlined">info</span>
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          className="meet-drawer-close-btn"
+                          onClick={() => setMeetingDrawerTab(null)}
+                          title="Close side panel"
+                        >
+                          <span className="material-symbols-outlined">close</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Drawer Content */}
+                    <div className="meet-drawer-body">
+                      {/* Chat Tab */}
+                      {meetingDrawerTab === 'chat' && (
+                        <div className="meet-drawer-chat-wrap">
+                          <div className="meet-chat-disclaimer">
+                            <span className="material-symbols-outlined">info</span>
+                            <span>Messages can be seen by participants in this call and are saved for this room.</span>
+                          </div>
+
+                          <div className="meet-drawer-chat-scroll">
+                            {chatMessages.length === 0 ? (
+                              <div className="meet-chat-empty">
+                                <span className="material-symbols-outlined empty-icon">forum</span>
+                                <p>No messages yet. Send a message to start chatting in the meeting!</p>
+                              </div>
+                            ) : (
+                              chatMessages.map((msg, idx) => {
+                                const isMe = msg.sender_name === (guestName.trim() || 'Colleague') || msg.sender_name === 'Host';
+                                return (
+                                  <div key={msg.id || idx} className={`meet-chat-msg-row ${isMe ? 'mine' : 'theirs'}`}>
+                                    <div className="meet-chat-msg-avatar">
+                                      {(msg.sender_name || 'U').charAt(0).toUpperCase()}
+                                    </div>
+                                    <div className="meet-chat-msg-bubble">
+                                      <div className="meet-chat-msg-meta">
+                                        <span className="sender">{msg.sender_name || 'User'}</span>
+                                        <span className="time">
+                                          {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                                        </span>
+                                      </div>
+                                      {msg.reply_to_content && (
+                                        <div className="meet-chat-reply-quote">
+                                          <strong>{msg.reply_to_sender || 'Replying to'}:</strong> {msg.reply_to_content}
+                                        </div>
+                                      )}
+                                      <div className="meet-chat-msg-text">{msg.content}</div>
+                                      {msg.attachment_url && (
+                                        <div className="meet-chat-msg-attachment">
+                                          <img
+                                            src={msg.attachment_url}
+                                            alt={msg.attachment_name || 'Attachment'}
+                                            onClick={() => setActiveImageLightbox(msg.attachment_url)}
+                                          />
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })
+                            )}
+                            <div ref={chatMessagesEndRef} />
+                          </div>
+
+                          {/* Chat Input */}
+                          <div className="meet-drawer-chat-input-box">
+                            {replyingTo && (
+                              <div className="meet-reply-banner">
+                                <div className="reply-info">
+                                  <span>Replying to <strong>{replyingTo.sender}</strong></span>
+                                  <p>{replyingTo.content}</p>
+                                </div>
+                                <button type="button" onClick={() => setReplyingTo(null)}>
+                                  <span className="material-symbols-outlined">close</span>
+                                </button>
+                              </div>
+                            )}
+                            <div className="meet-input-row">
+                              <input
+                                type="file"
+                                ref={chatFileInputRef}
+                                style={{ display: 'none' }}
+                                accept="image/*"
+                                onChange={handleImageSelect}
+                              />
+                              <button
+                                type="button"
+                                className="meet-input-action-btn"
+                                onClick={() => chatFileInputRef.current && chatFileInputRef.current.click()}
+                                title="Attach Image"
+                              >
+                                <span className="material-symbols-outlined">attach_file</span>
+                              </button>
+                              <input
+                                type="text"
+                                className="meet-chat-text-input"
+                                placeholder="Send a message to everyone..."
+                                value={chatInputText}
+                                onChange={(e) => setChatInputText(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleSendChatMessage(activeCallRoom);
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                className="meet-input-send-btn"
+                                disabled={!chatInputText.trim() && !chatAttachment}
+                                onClick={() => handleSendChatMessage(activeCallRoom)}
+                                title="Send message"
+                              >
+                                <span className="material-symbols-outlined">send</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* People Tab */}
+                      {meetingDrawerTab === 'people' && (
+                        <div className="meet-drawer-people-wrap">
+                          <button
+                            type="button"
+                            className="meet-drawer-add-people-btn"
+                            onClick={handleCopyGuestLink}
+                          >
+                            <span className="material-symbols-outlined">person_add</span>
+                            <span>Add people / Copy Invite Link</span>
+                          </button>
+
+                          {/* Waiting Knock Requests */}
+                          {pendingKnocks.length > 0 && (
+                            <div className="meet-people-section">
+                              <div className="meet-people-section-hdr">
+                                Waiting Lobby ({pendingKnocks.length})
+                              </div>
+                              {pendingKnocks.map((k) => (
+                                <div key={k.id} className="meet-person-knock-card">
+                                  <div className="knock-avatar">{k.name.charAt(0).toUpperCase()}</div>
+                                  <div className="knock-details">
+                                    <span className="name">{k.name}</span>
+                                    <span className="office">{k.officeId}</span>
+                                  </div>
+                                  <div className="knock-actions">
+                                    <button
+                                      type="button"
+                                      className="knock-btn admit"
+                                      onClick={() => handleAdmitKnockGuest(k.id)}
+                                    >
+                                      Admit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="knock-btn deny"
+                                      onClick={() => handleDenyKnockGuest(k.id)}
+                                    >
+                                      Deny
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* In-Call Participants */}
+                          <div className="meet-people-section">
+                            <div className="meet-people-section-hdr">
+                              In call ({isCallConnected ? '2' : '1'})
+                            </div>
+                            <div className="meet-person-card">
+                              <div className="person-avatar local-avatar">
+                                {guestName ? guestName.charAt(0).toUpperCase() : (isHostInCall ? 'H' : 'Y')}
+                              </div>
+                              <div className="person-info">
+                                <span className="person-name">You {isHostInCall ? '(Meeting Host)' : ''}</span>
+                                <span className="person-role">{isHostInCall ? 'Host' : 'Participant'}</span>
+                              </div>
+                              <div className="person-badges">
+                                {isHandRaised && (
+                                  <span className="hand-icon material-symbols-outlined" title="Hand raised">
+                                    front_hand
+                                  </span>
+                                )}
+                                <span
+                                  className={`mic-icon material-symbols-outlined ${isAudioMuted ? 'muted' : ''}`}
+                                  title={isAudioMuted ? 'Muted' : 'Microphone on'}
+                                >
+                                  {isAudioMuted ? 'mic_off' : 'mic'}
+                                </span>
+                              </div>
+                            </div>
+
+                            {isCallConnected && (
+                              <div className="meet-person-card">
+                                <div className="person-avatar remote-avatar">
+                                  {guestName ? guestName.charAt(0).toUpperCase() : 'R'}
+                                </div>
+                                <div className="person-info">
+                                  <span className="person-name">
+                                    {guestName ? `${guestName} (Remote)` : 'Remote Participant'}
+                                  </span>
+                                  <span className="person-role">Participant</span>
+                                </div>
+                                <div className="person-badges">
+                                  {peerHandRaised && (
+                                    <span className="hand-icon material-symbols-outlined" title="Hand raised">
+                                      front_hand
+                                    </span>
+                                  )}
+                                  <span className="mic-icon material-symbols-outlined" title="Microphone on">
+                                    mic
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Meeting Details Tab */}
+                      {meetingDrawerTab === 'info' && (
+                        <div className="meet-drawer-info-wrap">
+                          <div className="meet-info-block">
+                            <h4>Joining info</h4>
+                            <p className="meet-info-desc">
+                              Share this meeting code or direct link with colleagues to join instantly with no boundaries.
+                            </p>
+                            <div className="meet-code-card">
+                              <span className="meet-code-label">Room Code</span>
+                              <div className="meet-code-value">#{activeCallRoom}</div>
+                              <button
+                                type="button"
+                                className="meet-info-copy-btn"
+                                onClick={() => {
+                                  if (navigator.clipboard) {
+                                    navigator.clipboard.writeText(activeCallRoom);
+                                    showToast('Room code copied');
+                                  }
+                                }}
+                              >
+                                <span className="material-symbols-outlined">content_copy</span>
+                                <span>Copy code</span>
+                              </button>
+                            </div>
+
+                            <div className="meet-link-card">
+                              <span className="meet-code-label">Direct Meeting Link</span>
+                              <div className="meet-link-url">{`${publicBaseUrl || getPublicWebOrigin()}?room=${activeCallRoom}`}</div>
+                              <button
+                                type="button"
+                                className="meet-info-copy-btn"
+                                onClick={handleCopyGuestLink}
+                              >
+                                <span className="material-symbols-outlined">link</span>
+                                <span>Copy joining link</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="meet-info-block">
+                            <h4>Security & Encryption</h4>
+                            <div className="meet-security-item">
+                              <span className="material-symbols-outlined ok-icon">verified_user</span>
+                              <div>
+                                <strong>Peer-to-Peer Encrypted</strong>
+                                <p>WebRTC DTLS-SRTP audio & video streams are transmitted directly between peers.</p>
+                              </div>
+                            </div>
+                            <div className="meet-security-item">
+                              <span className="material-symbols-outlined ok-icon">bolt</span>
+                              <div>
+                                <strong>Zero Boundaries Quick Join</strong>
+                                <p>External attendees can join directly via browser without installing software.</p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </aside>
+                )}
               </div>
             </div>
           )}
