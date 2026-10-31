@@ -7,16 +7,41 @@
 * **Repository:** `meetManager`
 
 ---
+## 3. Screenshots
 
+
+| Calendar view | Table view |
+| :---: | :---: |
+| ![Calendar](docs/images/calendar.png) | ![Table](docs/images/table.png) |
+
+| Cards view | Analytics view |
+| :---: | :---: |
+| ![Cards](docs/images/cards.png) | ![Analytics](docs/images/analytics.png) |
+
+| Video call (speaker halo) | Guest knock and admit |
+| :---: | :---: |
+| ![Call](docs/images/call.png) | ![Lobby](docs/images/lobby.png) |
+
+| Chrome Side Panel | Chat with lightbox |
+| :---: | :---: |
+| ![Side panel](docs/images/sidepanel.png) | ![Chat](docs/images/chat.png) |
+
+---
 ## 1. EXECUTIVE SUMMARY & PURPOSE
 
 ### 1.1 Core Mission & Problem Statement
-Modern executive and engineering workflows suffer from severe context switching across disparate communication and productivity silos:
-* Video conferencing tools (Google Meet, Zoom, MS Teams) operate in isolated browser tabs requiring scheduled URLs, meeting codes, and external calendar synchronization.
-* Task and action-item tracking (Jira, Linear, Todoist) are disconnected from active meeting discussions, resulting in lost action items, manual transcription overhead, and forgotten follow-ups.
-* Communication tools (Slack, Teams) are fragmented from ephemeral project room calls, creating friction when sharing code snippets, diagrams, or quick links.
+Modern work is fragmented across tools:
 
-**PCS Meet Manager** solves this problem by providing a unified executive cockpit and lightweight real-time collaboration hub deployed as both a high-performance **Web SPA** and a native **Google Chrome Manifest V3 Side Panel Extension**. It brings instant zero-boundary and lobby-verified WebRTC video calling, global real-time channel chat, RFC 5545 `.ics` automated calendar dispatch, Pomodoro sprint execution, and automated standup generation directly into the user's viewport alongside their active work.
+- **Video calls** (Google Meet, Zoom, Teams) live in separate tabs and need scheduled URLs and calendar syncing.
+- **Task tracking** (Jira, Linear, Todoist) is disconnected from what is discussed in meetings, so action items get lost.
+- **Chat** (Slack, Teams) is separate from ad-hoc project calls, which makes sharing snippets and links awkward.
+
+PCS Meet Manager brings these into one app, available as a **web app** and as a **Chrome Manifest V3 Side Panel extension**. It provides:
+
+- Instant WebRTC video calls, either direct or through a host-approved lobby
+- Real-time channel chat with image sharing
+- Automatic calendar invites (`.ics`, RFC 5545) sent by email
+- Task and meeting tracking, a Pomodoro timer, and a standup generator
 
 **Target End-Users:**
 * **Executives & Engineering Managers:** Rapidly reviewing daily schedules, running 25-minute Pomodoro focus sprints, and auto-generating standup updates for Slack/Teams.
