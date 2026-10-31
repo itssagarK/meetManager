@@ -89,7 +89,24 @@ npm run package:extension
 - **Database**: SQLite (`better-sqlite3` in WAL mode)
 
 ---
+## Screenshots
 
+
+| Calendar view | Table view |
+| :---: | :---: |
+| ![Calendar](docs/images/calendar.png) | ![Table](docs/images/table.png) |
+
+| Cards view | Analytics view |
+| :---: | :---: |
+| ![Cards](docs/images/cards.png) | ![Analytics](docs/images/analytics.png) |
+
+| Video call (speaker halo) | Guest knock and admit |
+| :---: | :---: |
+| ![Call](docs/images/call.png) | ![Lobby](docs/images/lobby.png) |
+
+| Chrome Side Panel | Chat with lightbox |
+| :---: | :---: |
+| ![Side panel](docs/images/sidepanel.png) | ![Chat](docs/images/chat.png) |
 ## Author
 
 Sagar ([@itssagarK](https://github.com/itssagarK))
