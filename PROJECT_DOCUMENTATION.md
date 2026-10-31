@@ -7,7 +7,7 @@
 * **Repository:** `meetManager`
 
 ---
-## 3. Screenshots
+## Screenshots
 
 
 | Calendar view | Table view |
