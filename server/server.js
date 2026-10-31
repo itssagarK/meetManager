@@ -1,0 +1,1027 @@
+import express from 'express';
+import cors from 'cors';
+import Database from 'better-sqlite3';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import http from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import nodemailer from 'nodemailer';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const server = http.createServer(app);
+const PORT = process.env.PORT || 5000;
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Trust reverse proxy (Render, Cloudflare, Nginx, Docker)
+app.set('trust proxy', 1);
+
+// Enterprise HTTP security headers with relaxed CSP for WebRTC & Google Fonts
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+        connectSrc: ["'self'", 'ws:', 'wss:', 'https://*.google.com'],
+        mediaSrc: ["'self'", 'blob:'],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
+
+app.use(cors());
+app.use(express.json({ limit: '15mb' }));
+
+// Rate Limiting: 200 requests per 15 minutes per IP for general API
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests from this IP, please try again in 15 minutes.' },
+});
+
+// Stricter rate limit for write operations: 80 requests per 5 minutes
+const writeLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 80,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many updates, please slow down.' },
+});
+
+app.use('/api/', apiLimiter);
+app.use('/api/meetings', (req, res, next) => {
+  if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
+    return writeLimiter(req, res, next);
+  }
+  next();
+});
+
+// Configurable database path for cloud persistent disks (e.g. Render /data/meetings.db)
+const dbPath = process.env.DATABASE_PATH || path.join(__dirname, 'meetings.db');
+const dbDir = path.dirname(dbPath);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+const db = new Database(dbPath);
+// High-concurrency Write-Ahead Logging (WAL)
+db.pragma('journal_mode = WAL');
+
+// Initialize schema
+db.exec(`
+  CREATE TABLE IF NOT EXISTS meetings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    date TEXT NOT NULL,
+    time TEXT NOT NULL,
+    link TEXT,
+    attendees TEXT,
+    notes TEXT,
+    priority TEXT DEFAULT 'Medium',
+    status TEXT DEFAULT 'Pending',
+    type TEXT DEFAULT 'task',
+    workspace_id TEXT DEFAULT 'default',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+try {
+  db.exec("ALTER TABLE meetings ADD COLUMN priority TEXT DEFAULT 'Medium'");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE meetings ADD COLUMN type TEXT DEFAULT 'task'");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE meetings ADD COLUMN workspace_id TEXT DEFAULT 'default'");
+} catch (e) {}
+
+// Room messages schema for global online chat, images, and work links
+db.exec(`
+  CREATE TABLE IF NOT EXISTS room_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    sender_id TEXT,
+    content TEXT,
+    attachment_url TEXT,
+    attachment_type TEXT DEFAULT 'text',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+try {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_room_messages_room ON room_messages(room_id)');
+} catch (e) {}
+
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN client_msg_id TEXT');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN reply_to_id INTEGER');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN reply_to_sender TEXT');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN reply_to_content TEXT');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE room_messages ADD COLUMN is_deleted INTEGER DEFAULT 0');
+} catch (e) {}
+try {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_room_messages_client_id ON room_messages(client_msg_id)');
+} catch (e) {}
+
+// Clean up duplicate historical messages (keep earliest id per unique content)
+try {
+  db.exec(`
+    DELETE FROM room_messages 
+    WHERE id NOT IN (
+      SELECT MIN(id) 
+      FROM room_messages 
+      GROUP BY LOWER(room_id), sender_name, content, attachment_url, strftime('%Y-%m-%d %H:%M:%S', created_at)
+    )
+  `);
+} catch (e) {}
+
+function saveRoomMessage(targetRoom, chatMsg) {
+  const clientMsgId = chatMsg.clientMsgId || chatMsg.client_msg_id || null;
+  if (clientMsgId) {
+    const existing = db.prepare('SELECT * FROM room_messages WHERE client_msg_id = ?').get(clientMsgId);
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO room_messages (
+      room_id, sender_name, sender_id, content, attachment_url, attachment_type, client_msg_id, reply_to_id, reply_to_sender, reply_to_content, is_deleted
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+  `);
+  const result = stmt.run(
+    targetRoom,
+    (chatMsg.senderName || chatMsg.sender_name || 'Anonymous').trim(),
+    chatMsg.senderId || chatMsg.sender_id || 'user',
+    chatMsg.content || '',
+    chatMsg.attachmentUrl || chatMsg.attachment_url || null,
+    chatMsg.attachmentType || chatMsg.attachment_type || 'text',
+    clientMsgId,
+    chatMsg.replyToId || chatMsg.reply_to_id || null,
+    chatMsg.replyToSender || chatMsg.reply_to_sender || null,
+    chatMsg.replyToContent || chatMsg.reply_to_content || null
+  );
+
+  return db.prepare('SELECT * FROM room_messages WHERE id = ?').get(result.lastInsertRowid);
+}
+
+// Clean up any Saturday Townhall meetings scheduled on non-Saturdays
+try {
+  db.prepare(`
+    DELETE FROM meetings 
+    WHERE title LIKE '%Saturday Townhall%' 
+    AND strftime('%w', date) != '6'
+  `).run();
+} catch (e) {
+  console.error('Townhall date cleanup error:', e);
+}
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', database: 'connected' });
+});
+
+// WebRTC ICE Server Configuration Endpoint (STUN + optional TURN Relay + Public Base URL)
+app.get('/api/webrtc/ice-config', (req, res) => {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun.services.mozilla.com' },
+  ];
+
+  // If production environment variables for a TURN server are provided
+  if (process.env.TURN_URL) {
+    iceServers.push({
+      urls: process.env.TURN_URL,
+      username: process.env.TURN_USERNAME || '',
+      credential: process.env.TURN_CREDENTIAL || '',
+    });
+  }
+
+  // Derive public URL from environment or reverse proxy headers
+  const forwardedProto = req.headers['x-forwarded-proto'] || req.protocol;
+  const detectedHost = req.headers['x-forwarded-host'] || req.headers.host;
+  const publicUrl = process.env.PUBLIC_URL 
+    ? process.env.PUBLIC_URL.replace(/\/$/, '') 
+    : `${forwardedProto}://${detectedHost}`;
+
+  res.json({ iceServers, publicUrl });
+});
+
+// Workspace extraction helper for multi-tenancy
+const getWorkspaceId = (req) => {
+  const ws = req.headers['x-workspace-id'];
+  return (typeof ws === 'string' && ws.trim() !== '') ? ws.trim().toLowerCase() : 'default';
+};
+
+// Configure SMTP Transporter (if environment variables are present)
+const createEmailTransporter = () => {
+  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    return null;
+  }
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT) || 587,
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+};
+
+// Generate standard .ics iCalendar file content
+const generateIcsAttachment = ({ title, date, time, link, notes }) => {
+  const cleanDate = (date || '').replace(/-/g, '');
+  const uid = `pcs-${Date.now()}@meetmanager.com`;
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//PCS Meet Manager//EN',
+    'METHOD:REQUEST',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${cleanDate}T000000Z`,
+    `DTSTART:${cleanDate}T100000Z`,
+    `SUMMARY:${title}`,
+    `DESCRIPTION:${notes ? notes.replace(/\n/g, '\\n') : 'Scheduled via PCS Meet Manager'}`,
+    `URL:${link || ''}`,
+    'STATUS:CONFIRMED',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+};
+
+// Send Meeting Email Notification
+const sendMeetingEmailNotification = async (meeting) => {
+  const { title, date, time, link, attendees, notes } = meeting;
+  if (!attendees) return;
+
+  // Extract all valid emails from attendees string
+  const emailRegex = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/g;
+  const recipientEmails = attendees.match(emailRegex);
+  if (!recipientEmails || recipientEmails.length === 0) return;
+
+  const transporter = createEmailTransporter();
+  if (!transporter) {
+    console.log(`[SMTP Not Configured] Skipped sending automated invite for "${title}" to: ${recipientEmails.join(', ')}`);
+    return;
+  }
+
+  // Ensure meeting link resolves to an absolute public URL
+  let resolvedLink = link;
+  if (link && !link.startsWith('http://') && !link.startsWith('https://')) {
+    const base = process.env.PUBLIC_URL ? process.env.PUBLIC_URL.replace(/\/$/, '') : 'http://localhost:5000';
+    const query = link.startsWith('?') ? link : (link.startsWith('room=') ? `?${link}` : `?room=${link}`);
+    resolvedLink = `${base}${query}`;
+  }
+
+  const joinButtonHtml = resolvedLink
+    ? `<div style="margin: 24px 0;">
+        <a href="${resolvedLink}" style="background: #1d4ed8; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+          Join Video Meeting
+        </a>
+       </div>`
+    : '';
+
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1.5px solid #000000; padding: 24px; border-radius: 8px;">
+      <h2 style="margin-top: 0; color: #09090b; border-bottom: 1.5px solid #000000; padding-bottom: 10px;">Meeting Invitation: ${title}</h2>
+      <p style="font-size: 14px; color: #334155;">You have been invited to a meeting scheduled on <strong>PCS Meet Manager</strong>.</p>
+      
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 6px 0; font-weight: bold; width: 80px; color: #64748b;">Date:</td>
+          <td style="padding: 6px 0; font-weight: bold; color: #09090b;">${date}</td>
+        </tr>
+        <tr>
+          <td style="padding: 6px 0; font-weight: bold; color: #64748b;">Time:</td>
+          <td style="padding: 6px 0; font-weight: bold; color: #09090b;">${time}</td>
+        </tr>
+        ${resolvedLink ? `<tr><td style="padding: 6px 0; font-weight: bold; color: #64748b;">Link:</td><td style="padding: 6px 0;"><a href="${resolvedLink}" style="color: #1d4ed8;">${resolvedLink}</a></td></tr>` : ''}
+      </table>
+
+      ${notes ? `<div style="background: #f8fafc; border-left: 3px solid #1d4ed8; padding: 12px; margin: 16px 0; font-size: 13px; color: #1e293b;"><strong style="display:block; margin-bottom:4px;">Agenda / Notes:</strong>${notes}</div>` : ''}
+
+      ${joinButtonHtml}
+
+      <p style="font-size: 11px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 12px; margin-top: 24px;">
+        Calendar invitation (.ics) is attached. Open the attachment to add this event to Google Calendar, Outlook, or Apple Calendar.
+      </p>
+    </div>
+  `;
+
+  const icsContent = generateIcsAttachment({ title, date, time, link: resolvedLink, notes });
+
+  try {
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || `"PCS Meet Manager" <${process.env.SMTP_USER}>`,
+      to: recipientEmails.join(', '),
+      subject: `Meeting Invitation: ${title} (${date} at ${time})`,
+      html: htmlContent,
+      attachments: [
+        {
+          filename: 'invite.ics',
+          content: icsContent,
+          contentType: 'text/calendar; charset=utf-8; method=REQUEST',
+        },
+      ],
+    });
+    console.log(`[Email Sent] Successfully delivered invite for "${title}" to: ${recipientEmails.join(', ')}`);
+  } catch (err) {
+    console.error('[Email Error] Failed to send meeting invitation:', err.message);
+  }
+};
+
+// Routes
+app.get('/api/meetings', (req, res) => {
+  try {
+    const workspaceId = getWorkspaceId(req);
+    const items = db.prepare('SELECT * FROM meetings WHERE workspace_id = ? ORDER BY date ASC, time ASC').all(workspaceId);
+    res.json(items);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/meetings', (req, res) => {
+  try {
+    const workspaceId = getWorkspaceId(req);
+    const { title, date, time, link, attendees, notes, priority, status, type } = req.body;
+    if (!title || !date || !time) {
+      return res.status(400).json({ error: 'Title, date, and time are required fields.' });
+    }
+
+    const itemType = type || (link || (attendees && attendees.trim() !== '') ? 'meeting' : 'task');
+
+    const stmt = db.prepare(`
+      INSERT INTO meetings (title, date, time, link, attendees, notes, priority, status, type, workspace_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      title,
+      date,
+      time,
+      link || '',
+      attendees || '',
+      notes || '',
+      priority || 'Medium',
+      status || 'Pending',
+      itemType,
+      workspaceId
+    );
+
+    const newItem = db.prepare('SELECT * FROM meetings WHERE id = ?').get(result.lastInsertRowid);
+
+    // Asynchronous automated email notification dispatch (0ms latency to client)
+    if (itemType === 'meeting' && attendees && attendees.trim()) {
+      sendMeetingEmailNotification(newItem).catch((err) =>
+        console.error('Email notification background error:', err)
+      );
+    }
+
+    res.status(201).json(newItem);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/meetings/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const workspaceId = getWorkspaceId(req);
+    const { title, date, time, link, attendees, notes, priority, status, type } = req.body;
+
+    const itemType = type || (link || (attendees && attendees.trim() !== '') ? 'meeting' : 'task');
+
+    const stmt = db.prepare(`
+      UPDATE meetings
+      SET title = ?, date = ?, time = ?, link = ?, attendees = ?, notes = ?, priority = ?, status = ?, type = ?
+      WHERE id = ? AND workspace_id = ?
+    `);
+
+    const result = stmt.run(
+      title,
+      date,
+      time,
+      link || '',
+      attendees || '',
+      notes || '',
+      priority || 'Medium',
+      status || 'Pending',
+      itemType,
+      id,
+      workspaceId
+    );
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Item not found in this workspace' });
+    }
+
+    const updated = db.prepare('SELECT * FROM meetings WHERE id = ?').get(id);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/meetings/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const workspaceId = getWorkspaceId(req);
+    const stmt = db.prepare('DELETE FROM meetings WHERE id = ? AND workspace_id = ?');
+    const result = stmt.run(id, workspaceId);
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Item not found in this workspace' });
+    }
+
+    res.json({ message: 'Deleted successfully', id: Number(id) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Rooms map to track live active rooms, host sockets, and knocking waiting queues
+const rooms = new Map();
+// Dedicated Map for Global Chat Clients (completely separate from video calling rooms)
+const chatRooms = new Map();
+
+// Helper to get or create room state
+const getOrCreateRoom = (roomId) => {
+  const cleanId = (roomId || '').trim().toLowerCase();
+  if (!rooms.has(cleanId)) {
+    rooms.set(cleanId, {
+      hostSocket: null,
+      participants: new Set(),
+      waitingGuests: new Map(),
+    });
+  }
+  return rooms.get(cleanId);
+};
+
+// Public endpoint: List meetings with live room status for the public portal
+app.get('/api/public/live-meetings', (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const items = db.prepare(`
+      SELECT id, title, date, time, link, attendees, priority, type
+      FROM meetings
+      WHERE (date >= ? OR date = '') AND (type = 'meeting' OR link != '')
+      ORDER BY date ASC, time ASC
+    `).all(today);
+
+    const publicList = items.map((m) => {
+      let roomId = null;
+      if (m.link) {
+        const match = m.link.match(/room=([a-zA-Z0-9_-]+)/);
+        if (match) {
+          roomId = match[1];
+        } else if (!m.link.startsWith('http://') && !m.link.startsWith('https://')) {
+          roomId = m.link.replace(/^\?/, '').replace(/^room=/, '');
+        }
+      }
+      if (!roomId) {
+        roomId = `pcs-${m.id}`;
+      }
+
+      const roomData = rooms.get(roomId);
+      const isLive = Boolean(roomData && roomData.hostSocket && roomData.hostSocket.readyState === WebSocket.OPEN);
+
+      return {
+        id: m.id,
+        title: m.title,
+        date: m.date,
+        time: m.time,
+        roomId,
+        isLive,
+        participantCount: roomData ? roomData.participants.size : 0,
+      };
+    });
+
+    res.json(publicList);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Public endpoint: Check specific room status
+app.get('/api/public/room-status', (req, res) => {
+  const roomId = (req.query.room || '').trim().toLowerCase();
+  if (!roomId) return res.status(400).json({ error: 'room parameter required' });
+
+  const roomData = rooms.get(roomId);
+  const isLive = Boolean(roomData && (roomData.participants.size > 0 || (roomData.hostSocket && roomData.hostSocket.readyState === WebSocket.OPEN)));
+
+  res.json({
+    roomId,
+    isLive,
+    participantCount: roomData ? roomData.participants.size : 0,
+    hasWaitingQueue: roomData ? roomData.waitingGuests.size > 0 : false,
+  });
+});
+
+// Global Online Chat: Fetch room message history (text, links, images)
+app.get('/api/rooms/:roomId/messages', (req, res) => {
+  try {
+    const roomId = (req.params.roomId || 'general').trim().toLowerCase();
+    const messages = db.prepare(`
+      SELECT * FROM room_messages
+      WHERE LOWER(room_id) = LOWER(?)
+      ORDER BY id ASC
+      LIMIT 300
+    `).all(roomId);
+    res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Global Online Chat: Post message endpoint
+app.post('/api/rooms/:roomId/messages', (req, res) => {
+  try {
+    const targetRoom = (req.params.roomId || 'general').trim().toLowerCase();
+    const chatMsg = req.body || {};
+    if (!chatMsg.content && !chatMsg.attachmentUrl) {
+      return res.status(400).json({ error: 'Message content or attachment is required.' });
+    }
+
+    const savedMsg = saveRoomMessage(targetRoom, chatMsg);
+
+    const broadcastPayload = JSON.stringify({
+      type: 'chat-message',
+      roomId: targetRoom,
+      message: savedMsg,
+    });
+
+    if (chatRooms.has(targetRoom)) {
+      chatRooms.get(targetRoom).forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(broadcastPayload);
+        }
+      });
+    }
+
+    res.json(savedMsg);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Global Online Chat: Delete message for everyone
+app.delete('/api/rooms/:roomId/messages/:messageId', (req, res) => {
+  try {
+    const targetRoom = (req.params.roomId || 'general').trim().toLowerCase();
+    const messageId = Number(req.params.messageId);
+
+    db.prepare(`
+      UPDATE room_messages 
+      SET is_deleted = 1, content = 'This message was deleted', attachment_url = null
+      WHERE id = ? AND LOWER(room_id) = LOWER(?)
+    `).run(messageId, targetRoom);
+
+    const broadcastPayload = JSON.stringify({
+      type: 'chat-delete',
+      roomId: targetRoom,
+      messageId,
+    });
+
+    if (chatRooms.has(targetRoom)) {
+      chatRooms.get(targetRoom).forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(broadcastPayload);
+        }
+      });
+    }
+
+    res.json({ success: true, messageId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Production static assets
+if (isProduction) {
+  const clientDist = path.join(__dirname, '../client/dist');
+  app.use(express.static(clientDist));
+  app.use((req, res) => {
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
+
+// WebSocket Signaling Server for Instant WebRTC Calling & Guest Admission
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+wss.on('connection', (ws) => {
+  let currentRoom = null;
+  let currentChatRoom = null;
+  let isHostRole = false;
+  let clientGuestId = null;
+
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      const { type, roomId, payload, guest, guestId, reason } = data;
+
+      if (type === 'chat-join') {
+        const normalizedRoom = (roomId || 'general').trim().toLowerCase();
+        if (currentChatRoom && currentChatRoom !== normalizedRoom && chatRooms.has(currentChatRoom)) {
+          const oldSet = chatRooms.get(currentChatRoom);
+          oldSet.delete(ws);
+          if (oldSet.size > 0) {
+            const oldPresence = JSON.stringify({
+              type: 'chat-presence',
+              roomId: currentChatRoom,
+              onlineCount: oldSet.size,
+            });
+            oldSet.forEach((c) => {
+              if (c.readyState === WebSocket.OPEN) c.send(oldPresence);
+            });
+          }
+        }
+        currentChatRoom = normalizedRoom;
+        if (!chatRooms.has(normalizedRoom)) {
+          chatRooms.set(normalizedRoom, new Set());
+        }
+        chatRooms.get(normalizedRoom).add(ws);
+
+        const currentCount = chatRooms.get(normalizedRoom).size;
+        const presencePayload = JSON.stringify({
+          type: 'chat-presence',
+          roomId: normalizedRoom,
+          onlineCount: currentCount,
+        });
+
+        // Broadcast presence update to everyone in this room
+        chatRooms.get(normalizedRoom).forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(presencePayload);
+          }
+        });
+      } else if (type === 'chat-typing') {
+        const targetRoom = (roomId || currentChatRoom || 'general').trim().toLowerCase();
+        const typingSender = (data.senderName || 'Colleague').trim();
+        const isTyping = Boolean(data.isTyping);
+
+        if (chatRooms.has(targetRoom)) {
+          const typingPayload = JSON.stringify({
+            type: 'chat-typing',
+            roomId: targetRoom,
+            senderName: typingSender,
+            isTyping,
+          });
+          chatRooms.get(targetRoom).forEach((client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(typingPayload);
+            }
+          });
+        }
+      } else if (type === 'host-join' || type === 'join-room') {
+        const cleanRoom = (roomId || '').trim().toLowerCase();
+        if (!cleanRoom) return;
+
+        currentRoom = cleanRoom;
+        const room = getOrCreateRoom(cleanRoom);
+
+        if (type === 'host-join') {
+          isHostRole = true;
+          room.hostSocket = ws;
+          ws.send(JSON.stringify({
+            type: 'host-ready',
+            roomId: cleanRoom,
+            waitingGuests: Array.from(room.waitingGuests.values()).map((g) => ({
+              id: g.id,
+              name: g.name,
+              officeId: g.officeId,
+              timestamp: g.timestamp,
+            })),
+          }));
+        }
+
+        // Add this socket to participants
+        room.participants.add(ws);
+
+        // Find other participants currently connected in this room
+        const otherParticipants = Array.from(room.participants).filter(
+          (client) => client !== ws && client.readyState === WebSocket.OPEN
+        );
+
+        if (otherParticipants.length > 0) {
+          // Tell each existing participant that a new peer joined; designate existing participant as initiator
+          otherParticipants.forEach((existingClient) => {
+            existingClient.send(JSON.stringify({
+              type: 'peer-joined',
+              roomId: cleanRoom,
+              initiator: true,
+            }));
+          });
+
+          // Tell the newly joined peer that they joined and should wait for the offer
+          ws.send(JSON.stringify({
+            type: 'peer-joined',
+            roomId: cleanRoom,
+            initiator: false,
+          }));
+        }
+      } else if (type === 'guest-knock') {
+        const cleanRoom = (roomId || '').trim().toLowerCase();
+        if (!cleanRoom) return;
+
+        currentRoom = cleanRoom;
+        clientGuestId = (guest && guest.id) || `guest-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        const room = getOrCreateRoom(cleanRoom);
+        const guestRecord = {
+          id: clientGuestId,
+          name: (guest && guest.name) ? guest.name.trim() : 'Guest User',
+          officeId: (guest && guest.officeId) ? guest.officeId.trim() : 'N/A',
+          ws,
+          timestamp: Date.now(),
+        };
+        room.waitingGuests.set(clientGuestId, guestRecord);
+
+        const isHostOnline = Boolean(room.hostSocket && room.hostSocket.readyState === WebSocket.OPEN);
+
+        if (isHostOnline) {
+          room.hostSocket.send(JSON.stringify({
+            type: 'guest-knock-request',
+            roomId: cleanRoom,
+            guest: {
+              id: clientGuestId,
+              name: guestRecord.name,
+              officeId: guestRecord.officeId,
+              timestamp: guestRecord.timestamp,
+            },
+          }));
+        }
+
+        ws.send(JSON.stringify({
+          type: 'knock-status',
+          status: 'pending',
+          isHostOnline,
+          guestId: clientGuestId,
+        }));
+      } else if (type === 'admit-guest') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (!targetRoom || !rooms.has(targetRoom)) return;
+        const room = rooms.get(targetRoom);
+        const waitingGuest = room.waitingGuests.get(guestId);
+
+        if (waitingGuest && waitingGuest.ws.readyState === WebSocket.OPEN) {
+          room.participants.add(waitingGuest.ws);
+          room.waitingGuests.delete(guestId);
+
+          waitingGuest.ws.send(JSON.stringify({
+            type: 'guest-admitted',
+            roomId: targetRoom,
+          }));
+
+          const otherParticipants = Array.from(room.participants).filter(
+            (client) => client !== waitingGuest.ws && client.readyState === WebSocket.OPEN
+          );
+
+          otherParticipants.forEach((existingClient) => {
+            existingClient.send(JSON.stringify({
+              type: 'peer-joined',
+              roomId: targetRoom,
+              initiator: true,
+            }));
+          });
+
+          waitingGuest.ws.send(JSON.stringify({
+            type: 'peer-joined',
+            roomId: targetRoom,
+            initiator: false,
+          }));
+
+          if (room.hostSocket && room.hostSocket.readyState === WebSocket.OPEN) {
+            room.hostSocket.send(JSON.stringify({
+              type: 'guest-admitted-ack',
+              guestId,
+              remainingWaiting: room.waitingGuests.size,
+            }));
+          }
+        }
+      } else if (type === 'deny-guest') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (!targetRoom || !rooms.has(targetRoom)) return;
+        const room = rooms.get(targetRoom);
+        const waitingGuest = room.waitingGuests.get(guestId);
+
+        if (waitingGuest && waitingGuest.ws.readyState === WebSocket.OPEN) {
+          waitingGuest.ws.send(JSON.stringify({
+            type: 'guest-denied',
+            reason: reason || 'Host declined entry for this session.',
+          }));
+          room.waitingGuests.delete(guestId);
+        }
+      } else if (type === 'signal') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom && rooms.has(targetRoom)) {
+          const room = rooms.get(targetRoom);
+          room.participants.forEach((client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({ type: 'signal', roomId: targetRoom, payload }));
+            }
+          });
+        }
+      } else if (type === 'raise-hand') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom && rooms.has(targetRoom)) {
+          const room = rooms.get(targetRoom);
+          room.participants.forEach((client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'raise-hand',
+                roomId: targetRoom,
+                isRaised: Boolean(data.isRaised),
+                senderName: data.senderName || 'Participant',
+              }));
+            }
+          });
+        }
+      } else if (type === 'chat-message') {
+        const targetRoom = (roomId || currentChatRoom || 'general').trim().toLowerCase();
+        const { message: chatMsg } = data;
+        if (!chatMsg || !targetRoom) return;
+
+        currentChatRoom = targetRoom;
+        if (!chatRooms.has(targetRoom)) {
+          chatRooms.set(targetRoom, new Set());
+        }
+        chatRooms.get(targetRoom).add(ws);
+
+        const savedMsg = saveRoomMessage(targetRoom, chatMsg);
+
+        const broadcastPayload = JSON.stringify({
+          type: 'chat-message',
+          roomId: targetRoom,
+          message: savedMsg,
+        });
+
+        if (chatRooms.has(targetRoom)) {
+          chatRooms.get(targetRoom).forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(broadcastPayload);
+            }
+          });
+        }
+        if (rooms.has(targetRoom)) {
+          rooms.get(targetRoom).participants.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(broadcastPayload);
+            }
+          });
+        }
+      } else if (type === 'chat-delete') {
+        const targetRoom = (roomId || currentChatRoom || 'general').trim().toLowerCase();
+        const messageId = Number(data.messageId);
+        if (!messageId) return;
+
+        db.prepare(`
+          UPDATE room_messages 
+          SET is_deleted = 1, content = 'This message was deleted', attachment_url = null
+          WHERE id = ? AND LOWER(room_id) = LOWER(?)
+        `).run(messageId, targetRoom);
+
+        const broadcastPayload = JSON.stringify({
+          type: 'chat-delete',
+          roomId: targetRoom,
+          messageId,
+        });
+
+        if (chatRooms.has(targetRoom)) {
+          chatRooms.get(targetRoom).forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(broadcastPayload);
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.error('WebSocket message parsing error:', err);
+    }
+  });
+
+  ws.on('close', () => {
+    chatRooms.forEach((clientSet, rId) => {
+      if (clientSet.has(ws)) {
+        clientSet.delete(ws);
+        if (clientSet.size > 0) {
+          const presencePayload = JSON.stringify({
+            type: 'chat-presence',
+            roomId: rId,
+            onlineCount: clientSet.size,
+          });
+          clientSet.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(presencePayload);
+            }
+          });
+        }
+      }
+      if (clientSet.size === 0) {
+        chatRooms.delete(rId);
+      }
+    });
+
+    if (currentRoom && rooms.has(currentRoom)) {
+      const room = rooms.get(currentRoom);
+      if (room.hostSocket === ws) {
+        room.hostSocket = null;
+        room.participants.forEach((client) => {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'host-left' }));
+          }
+        });
+      }
+      room.participants.delete(ws);
+      if (clientGuestId) {
+        room.waitingGuests.delete(clientGuestId);
+        if (room.hostSocket && room.hostSocket.readyState === WebSocket.OPEN) {
+          room.hostSocket.send(JSON.stringify({
+            type: 'guest-knock-cancelled',
+            guestId: clientGuestId,
+          }));
+        }
+      }
+      room.participants.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ type: 'peer-left' }));
+        }
+      });
+      if (room.participants.size === 0 && room.waitingGuests.size === 0) {
+        rooms.delete(currentRoom);
+      }
+    }
+  });
+
+  ws.on('error', (err) => {
+    console.error('WebSocket connection error:', err);
+  });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Backend server with WebRTC signaling running on port ${PORT}`);
+});
+
+// Graceful shutdown handling (SIGTERM / SIGINT)
+const gracefulShutdown = (signal) => {
+  console.log(`Received ${signal}. Initiating graceful shutdown...`);
+
+  // 1. Notify and close active WebSockets
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.close(1001, 'Server restarting or shutting down');
+    }
+  });
+
+  // 2. Stop accepting new HTTP requests
+  server.close(() => {
+    console.log('HTTP and WebSocket server closed.');
+
+    // 3. Close SQLite database connection cleanly
+    try {
+      db.close();
+      console.log('SQLite database connection closed cleanly.');
+    } catch (dbErr) {
+      console.error('Error closing SQLite database:', dbErr);
+    }
+
+    process.exit(0);
+  });
+
+  // Force exit if shutdown hangs after 5 seconds
+  setTimeout(() => {
+    console.error('Graceful shutdown timed out. Forcing process exit.');
+    process.exit(1);
+  }, 5000);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
