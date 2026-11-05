@@ -473,14 +473,15 @@ const rooms = new Map();
 // Dedicated Map for Global Chat Clients (completely separate from video calling rooms)
 const chatRooms = new Map();
 
-// Helper to get or create room state
+// Helper to get or create room state (Multi-Peer WebRTC Architecture)
 const getOrCreateRoom = (roomId) => {
   const cleanId = (roomId || '').trim().toLowerCase();
   if (!rooms.has(cleanId)) {
     rooms.set(cleanId, {
       hostSocket: null,
-      participants: new Set(),
-      waitingGuests: new Map(),
+      hostPeerId: null,
+      participants: new Map(), // peerId -> { ws, peerId, name, officeId, isHost, isAudioMuted, isVideoOff, isHandRaised }
+      waitingGuests: new Map(), // guestId -> { id, name, officeId, ws, timestamp }
     });
   }
   return rooms.get(cleanId);
@@ -641,13 +642,15 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', (ws) => {
   let currentRoom = null;
   let currentChatRoom = null;
+  let currentPeerId = null;
   let isHostRole = false;
+  let peerName = 'Participant';
   let clientGuestId = null;
 
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      const { type, roomId, payload, guest, guestId, reason } = data;
+      const { type, roomId, payload, guest, guestId, reason, peerId, toPeerId, fromPeerId } = data;
 
       if (type === 'chat-join') {
         const normalizedRoom = (roomId || 'general').trim().toLowerCase();
@@ -707,11 +710,20 @@ wss.on('connection', (ws) => {
         if (!cleanRoom) return;
 
         currentRoom = cleanRoom;
+        currentPeerId = (peerId || '').trim() || `peer_${Math.random().toString(36).substring(2, 9)}`;
+        isHostRole = (type === 'host-join');
+        peerName = (data.name || '').trim() || (isHostRole ? 'Host' : 'Participant');
+
+        ws.currentRoom = cleanRoom;
+        ws.peerId = currentPeerId;
+        ws.peerName = peerName;
+        ws.isHost = isHostRole;
+
         const room = getOrCreateRoom(cleanRoom);
 
-        if (type === 'host-join') {
-          isHostRole = true;
+        if (isHostRole) {
           room.hostSocket = ws;
+          room.hostPeerId = currentPeerId;
           ws.send(JSON.stringify({
             type: 'host-ready',
             roomId: cleanRoom,
@@ -724,31 +736,60 @@ wss.on('connection', (ws) => {
           }));
         }
 
-        // Add this socket to participants
-        room.participants.add(ws);
+        // List existing active participants to provide to the newly connected peer
+        const existingPeers = [];
+        room.participants.forEach((p, pId) => {
+          if (pId !== currentPeerId && p.ws.readyState === WebSocket.OPEN) {
+            existingPeers.push({
+              peerId: p.peerId,
+              name: p.name,
+              isHost: Boolean(p.isHost),
+              isAudioMuted: Boolean(p.isAudioMuted),
+              isVideoOff: Boolean(p.isVideoOff),
+              isHandRaised: Boolean(p.isHandRaised),
+            });
+          }
+        });
 
-        // Find other participants currently connected in this room
-        const otherParticipants = Array.from(room.participants).filter(
-          (client) => client !== ws && client.readyState === WebSocket.OPEN
-        );
+        // Register this participant in room map
+        room.participants.set(currentPeerId, {
+          ws,
+          peerId: currentPeerId,
+          name: peerName,
+          officeId: data.officeId || '',
+          isHost: isHostRole,
+          isAudioMuted: false,
+          isVideoOff: false,
+          isHandRaised: false,
+        });
 
-        if (otherParticipants.length > 0) {
-          // Tell each existing participant that a new peer joined; designate existing participant as initiator
-          otherParticipants.forEach((existingClient) => {
-            existingClient.send(JSON.stringify({
-              type: 'peer-joined',
-              roomId: cleanRoom,
-              initiator: true,
-            }));
-          });
+        // 1. Send all existing peers to newly joined participant so they can establish mesh WebRTC offers
+        ws.send(JSON.stringify({
+          type: 'room-users',
+          roomId: cleanRoom,
+          yourPeerId: currentPeerId,
+          peers: existingPeers,
+        }));
 
-          // Tell the newly joined peer that they joined and should wait for the offer
-          ws.send(JSON.stringify({
-            type: 'peer-joined',
-            roomId: cleanRoom,
-            initiator: false,
-          }));
-        }
+        // 2. Broadcast new peer's arrival to all existing participants in the room
+        const newPeerPayload = JSON.stringify({
+          type: 'peer-joined',
+          roomId: cleanRoom,
+          peer: {
+            peerId: currentPeerId,
+            name: peerName,
+            isHost: isHostRole,
+            isAudioMuted: false,
+            isVideoOff: false,
+            isHandRaised: false,
+          },
+        });
+
+        room.participants.forEach((p, pId) => {
+          if (pId !== currentPeerId && p.ws.readyState === WebSocket.OPEN) {
+            p.ws.send(newPeerPayload);
+          }
+        });
       } else if (type === 'guest-knock') {
         const cleanRoom = (roomId || '').trim().toLowerCase();
         if (!cleanRoom) return;
@@ -793,30 +834,11 @@ wss.on('connection', (ws) => {
         const waitingGuest = room.waitingGuests.get(guestId);
 
         if (waitingGuest && waitingGuest.ws.readyState === WebSocket.OPEN) {
-          room.participants.add(waitingGuest.ws);
           room.waitingGuests.delete(guestId);
 
           waitingGuest.ws.send(JSON.stringify({
             type: 'guest-admitted',
             roomId: targetRoom,
-          }));
-
-          const otherParticipants = Array.from(room.participants).filter(
-            (client) => client !== waitingGuest.ws && client.readyState === WebSocket.OPEN
-          );
-
-          otherParticipants.forEach((existingClient) => {
-            existingClient.send(JSON.stringify({
-              type: 'peer-joined',
-              roomId: targetRoom,
-              initiator: true,
-            }));
-          });
-
-          waitingGuest.ws.send(JSON.stringify({
-            type: 'peer-joined',
-            roomId: targetRoom,
-            initiator: false,
           }));
 
           if (room.hostSocket && room.hostSocket.readyState === WebSocket.OPEN) {
@@ -841,12 +863,60 @@ wss.on('connection', (ws) => {
           room.waitingGuests.delete(guestId);
         }
       } else if (type === 'signal') {
+        // Multi-Peer WebRTC Mesh Signal Routing
         const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
         if (targetRoom && rooms.has(targetRoom)) {
           const room = rooms.get(targetRoom);
-          room.participants.forEach((client) => {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({ type: 'signal', roomId: targetRoom, payload }));
+          const fromId = fromPeerId || currentPeerId;
+
+          if (toPeerId) {
+            // Targeted route directly to destination peer
+            const targetPeer = room.participants.get(toPeerId);
+            if (targetPeer && targetPeer.ws.readyState === WebSocket.OPEN) {
+              targetPeer.ws.send(JSON.stringify({
+                type: 'signal',
+                roomId: targetRoom,
+                fromPeerId: fromId,
+                toPeerId,
+                payload,
+              }));
+            }
+          } else {
+            // Broadcast fallback to all other peers
+            room.participants.forEach((p, pId) => {
+              if (pId !== fromId && p.ws.readyState === WebSocket.OPEN) {
+                p.ws.send(JSON.stringify({
+                  type: 'signal',
+                  roomId: targetRoom,
+                  fromPeerId: fromId,
+                  payload,
+                }));
+              }
+            });
+          }
+        }
+      } else if (type === 'peer-status') {
+        // Broadcast participant audio mute / camera off state to all peers in room
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom && rooms.has(targetRoom)) {
+          const room = rooms.get(targetRoom);
+          const p = room.participants.get(currentPeerId);
+          if (p) {
+            if (typeof data.isAudioMuted === 'boolean') p.isAudioMuted = data.isAudioMuted;
+            if (typeof data.isVideoOff === 'boolean') p.isVideoOff = data.isVideoOff;
+            if (typeof data.isHandRaised === 'boolean') p.isHandRaised = data.isHandRaised;
+          }
+          const statusPayload = JSON.stringify({
+            type: 'peer-status-update',
+            roomId: targetRoom,
+            peerId: currentPeerId,
+            isAudioMuted: data.isAudioMuted,
+            isVideoOff: data.isVideoOff,
+            isHandRaised: data.isHandRaised,
+          });
+          room.participants.forEach((otherP, pId) => {
+            if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
+              otherP.ws.send(statusPayload);
             }
           });
         }
@@ -854,14 +924,20 @@ wss.on('connection', (ws) => {
         const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
         if (targetRoom && rooms.has(targetRoom)) {
           const room = rooms.get(targetRoom);
-          room.participants.forEach((client) => {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'raise-hand',
-                roomId: targetRoom,
-                isRaised: Boolean(data.isRaised),
-                senderName: data.senderName || 'Participant',
-              }));
+          const p = room.participants.get(currentPeerId);
+          if (p) {
+            p.isHandRaised = Boolean(data.isRaised);
+          }
+          const handPayload = JSON.stringify({
+            type: 'raise-hand',
+            roomId: targetRoom,
+            peerId: currentPeerId,
+            senderName: data.senderName || peerName || 'Participant',
+            isRaised: Boolean(data.isRaised),
+          });
+          room.participants.forEach((otherP, pId) => {
+            if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
+              otherP.ws.send(handPayload);
             }
           });
         }
@@ -892,9 +968,9 @@ wss.on('connection', (ws) => {
           });
         }
         if (rooms.has(targetRoom)) {
-          rooms.get(targetRoom).participants.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(broadcastPayload);
+          rooms.get(targetRoom).participants.forEach((p) => {
+            if (p.ws.readyState === WebSocket.OPEN) {
+              p.ws.send(broadcastPayload);
             }
           });
         }
@@ -954,13 +1030,16 @@ wss.on('connection', (ws) => {
       const room = rooms.get(currentRoom);
       if (room.hostSocket === ws) {
         room.hostSocket = null;
-        room.participants.forEach((client) => {
-          if (client !== ws && client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({ type: 'host-left' }));
+        room.hostPeerId = null;
+        room.participants.forEach((p) => {
+          if (p.ws !== ws && p.ws.readyState === WebSocket.OPEN) {
+            p.ws.send(JSON.stringify({ type: 'host-left', peerId: currentPeerId }));
           }
         });
       }
-      room.participants.delete(ws);
+      if (currentPeerId) {
+        room.participants.delete(currentPeerId);
+      }
       if (clientGuestId) {
         room.waitingGuests.delete(clientGuestId);
         if (room.hostSocket && room.hostSocket.readyState === WebSocket.OPEN) {
@@ -970,9 +1049,14 @@ wss.on('connection', (ws) => {
           }));
         }
       }
-      room.participants.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({ type: 'peer-left' }));
+      const peerLeftPayload = JSON.stringify({
+        type: 'peer-left',
+        roomId: currentRoom,
+        peerId: currentPeerId,
+      });
+      room.participants.forEach((p) => {
+        if (p.ws.readyState === WebSocket.OPEN) {
+          p.ws.send(peerLeftPayload);
         }
       });
       if (room.participants.size === 0 && room.waitingGuests.size === 0) {

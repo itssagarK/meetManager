@@ -1971,7 +1971,7 @@ body {
   align-items: center;
 }
 
-/* Video Canvas Grid */
+/* Multi-Peer Video Canvas Grid */
 .meet-video-canvas {
   width: 100%;
   height: 100%;
@@ -1981,48 +1981,101 @@ body {
   align-content: center;
   position: relative;
   transition: all 0.25s ease;
+  max-width: 1600px;
+  max-height: calc(100vh - 160px);
+}
+
+/* Grid layout with 1 participant */
+.meet-video-canvas.grid-mode.grid-count-1,
+.meet-video-canvas.grid-mode.one-participant {
+  grid-template-columns: 1fr;
+  max-width: 900px;
+  max-height: 80vh;
 }
 
 /* Grid layout with 2 participants */
+.meet-video-canvas.grid-mode.grid-count-2,
 .meet-video-canvas.grid-mode.two-participants {
   grid-template-columns: repeat(2, minmax(320px, 1fr));
-  max-width: 1400px;
+  max-width: 1360px;
   max-height: 80vh;
 }
 
-/* Grid layout with 1 participant (waiting) */
-.meet-video-canvas.grid-mode.one-participant {
-  grid-template-columns: 1fr;
-  max-width: 880px;
-  max-height: 80vh;
+/* Grid layout with 3-4 participants */
+.meet-video-canvas.grid-mode.grid-count-4 {
+  grid-template-columns: repeat(2, minmax(300px, 1fr));
+  grid-template-rows: repeat(2, minmax(180px, 1fr));
+  max-width: 1280px;
+  max-height: 82vh;
 }
 
-/* Spotlight layout */
-.meet-video-canvas.spotlight-mode {
-  position: relative;
-  display: block;
-  width: 100%;
-  height: 100%;
+/* Grid layout with 5-6 participants */
+.meet-video-canvas.grid-mode.grid-count-6 {
+  grid-template-columns: repeat(3, minmax(260px, 1fr));
+  grid-template-rows: repeat(2, minmax(170px, 1fr));
+  max-width: 1440px;
+  max-height: 82vh;
 }
 
-.meet-video-canvas.spotlight-mode .meet-video-tile.is-pinned-hero {
-  position: absolute;
-  inset: 0;
+/* Grid layout with 7-9 participants */
+.meet-video-canvas.grid-mode.grid-count-9 {
+  grid-template-columns: repeat(3, minmax(240px, 1fr));
+  grid-template-rows: repeat(3, minmax(150px, 1fr));
+  max-width: 1500px;
+  max-height: 84vh;
+}
+
+/* Grid layout with 10+ participants */
+.meet-video-canvas.grid-mode.grid-count-many {
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  max-width: 1600px;
+  max-height: 84vh;
+}
+
+/* Multi-Peer Spotlight Layout: Hero Stage + Bottom Filmstrip */
+.meet-video-canvas.spotlight-layout {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
+  gap: 12px;
+  max-width: 1600px;
+  max-height: calc(100vh - 160px);
+}
+
+.meet-spotlight-hero {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.meet-spotlight-hero .meet-video-tile {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
   border-radius: 16px;
-  z-index: 5;
 }
 
-.meet-video-canvas.spotlight-mode .meet-video-tile.is-pinned-thumb {
-  position: absolute;
-  bottom: 24px;
-  right: 24px;
-  width: 260px;
-  aspect-ratio: 16/9;
-  z-index: 15;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
-  border: 2px solid #5f6368;
+.meet-filmstrip {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 4px 2px;
+  height: 136px;
+  flex-shrink: 0;
+  align-items: center;
+  scrollbar-width: thin;
+  scrollbar-color: #5f6368 transparent;
+}
+
+.meet-filmstrip .meet-video-tile {
+  width: 220px;
+  height: 124px;
+  flex-shrink: 0;
+  border-radius: 12px;
 }
 
 /* Video Tile Card */
@@ -2316,6 +2369,49 @@ body {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.meet-knocking-alert-strip .btn-admit-all {
+  background: #1a73e8;
+  color: #ffffff;
+  border: none;
+  border-radius: 16px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.meet-knocking-alert-strip .btn-admit-all:hover {
+  background: #1557b0;
+}
+
+.meet-person-card .person-badges .person-action-btn {
+  background: transparent;
+  border: none;
+  color: #9aa0a6;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 50%;
+  transition: all 0.15s ease;
+}
+
+.meet-person-card .person-badges .person-action-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.meet-pip-participants-badge {
+  font-size: 11px;
+  color: #9aa0a6;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-weight: 500;
 }
 
 /* Floating Bottom Control Pill Dock */
@@ -3268,10 +3364,11 @@ body {
   .meet-quality-badge {
     display: none;
   }
-  .meet-video-canvas.grid-mode.two-participants {
-    grid-template-columns: 1fr;
-    grid-template-rows: 1fr 1fr;
-    max-height: calc(100vh - 160px);
+  .meet-video-canvas.grid-mode {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: auto !important;
+    max-height: calc(100vh - 150px);
+    overflow-y: auto;
   }
   .meet-bottom-pill-dock {
     bottom: 12px;

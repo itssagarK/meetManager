@@ -54,6 +54,85 @@ const initialFormData = {
 
 const priorityOrder = { High: 1, Medium: 2, Low: 3 };
 
+// Individual Remote Participant Video Tile for Multi-User WebRTC Meetings
+const RemoteParticipantTile = React.memo(({
+  peer,
+  isSpeaking,
+  isPinned,
+  onPin,
+}) => {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      if (peer.stream) {
+        if (videoRef.current.srcObject !== peer.stream) {
+          videoRef.current.srcObject = peer.stream;
+        }
+        videoRef.current.play().catch(() => {});
+      } else {
+        videoRef.current.srcObject = null;
+      }
+    }
+  }, [peer.stream]);
+
+  const initials = (peer.name || 'P').charAt(0).toUpperCase();
+
+  return (
+    <div
+      className={`meet-video-tile remote-tile ${isSpeaking ? 'speaking' : ''} ${isPinned ? 'is-pinned-hero' : ''}`}
+    >
+      {peer.isVideoOff || !peer.stream ? (
+        <div className="meet-avatar-placeholder">
+          <div className={`meet-avatar-circle remote-avatar-circle ${isSpeaking ? 'pulse-speaking' : ''}`}>
+            <span>{initials}</span>
+          </div>
+          <div className="meet-avatar-label">
+            {peer.isVideoOff ? 'Camera is off' : 'Connecting stream...'}
+          </div>
+        </div>
+      ) : (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          className="meet-video-element remote-stream"
+        />
+      )}
+
+      {/* Participant Bottom Pill */}
+      <div className="meet-name-pill">
+        <span className={`mic-badge ${peer.isAudioMuted ? 'muted' : ''}`}>
+          <span className="material-symbols-outlined">
+            {peer.isAudioMuted ? 'mic_off' : 'mic'}
+          </span>
+        </span>
+        <span className="participant-title">
+          {peer.name || 'Participant'} {peer.isHost ? '(Host)' : ''}
+        </span>
+        {peer.isHandRaised && (
+          <span className="raised-hand-badge">
+            <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>
+            <span>Hand raised</span>
+          </span>
+        )}
+      </div>
+
+      {/* Pin button */}
+      <button
+        type="button"
+        className="meet-tile-pin-btn"
+        onClick={onPin}
+        title={isPinned ? 'Unpin' : 'Pin to main view'}
+      >
+        <span className="material-symbols-outlined">
+          {isPinned ? 'keep_off' : 'push_pin'}
+        </span>
+      </button>
+    </div>
+  );
+});
+
 function App() {
   // Multi-Tenant Workspace State
   const [workspaceId, setWorkspaceId] = useState(() => {
@@ -92,8 +171,11 @@ function App() {
   });
   const alertedMeetingsRef = useRef(new Set());
 
-  // WebRTC Video Calling ("Instant PCS Meet Room" - Google Meet Experience)
+  // WebRTC Video Calling ("Instant PCS Meet Room" - Multi-User Google Meet Experience)
+  const [myPeerId] = useState(() => 'peer_' + Math.random().toString(36).substring(2, 9));
   const [activeCallRoom, setActiveCallRoom] = useState(null);
+  const [connectedPeers, setConnectedPeers] = useState([]); // Array of { peerId, name, isHost, stream, isAudioMuted, isVideoOff, isHandRaised, quality }
+  const [speakingPeers, setSpeakingPeers] = useState(new Set()); // Set of peerIds currently speaking
   const [isCallConnected, setIsCallConnected] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
@@ -105,12 +187,10 @@ function App() {
   const [publicBaseUrl, setPublicBaseUrl] = useState('');
   const [callDuration, setCallDuration] = useState(0);
   const [isHandRaised, setIsHandRaised] = useState(false);
-  const [peerHandRaised, setPeerHandRaised] = useState(false);
   const [meetingDrawerTab, setMeetingDrawerTab] = useState(null); // null | 'chat' | 'people' | 'info'
   const [meetingLayout, setMeetingLayout] = useState('grid'); // 'grid' | 'spotlight'
-  const [pinnedParticipant, setPinnedParticipant] = useState(null); // null | 'local' | 'remote'
+  const [pinnedParticipant, setPinnedParticipant] = useState(null); // null | 'local' | peerId
   const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
-  const [isRemoteSpeaking, setIsRemoteSpeaking] = useState(false);
   const [isCallFullscreen, setIsCallFullscreen] = useState(false);
   const [isGuestMode, setIsGuestMode] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -184,13 +264,13 @@ function App() {
   const chatWsRef = useRef(null);
 
   const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const peerConnectionRef = useRef(null);
+  const peerConnectionsRef = useRef(new Map()); // peerId -> RTCPeerConnection
+  const remoteStreamsRef = useRef(new Map()); // peerId -> MediaStream
+  const peerIceQueuesRef = useRef(new Map()); // peerId -> RTCIceCandidate[]
+  const peerAudioAnalysersRef = useRef(new Map()); // peerId -> AnalyserNode
   const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const wsSignalingRef = useRef(null);
-  const iceCandidatesQueue = useRef([]);
   const statsIntervalRef = useRef(null);
 
   // Focus Sprint (Pomodoro Buffer Timer)
@@ -719,8 +799,19 @@ function App() {
         JSON.stringify({
           type: 'raise-hand',
           roomId: activeCallRoom,
+          peerId: myPeerId,
           isRaised: nextRaised,
           senderName: guestName.trim() || (isHostInCall ? 'Host' : 'Participant'),
+        })
+      );
+      wsSignalingRef.current.send(
+        JSON.stringify({
+          type: 'peer-status',
+          roomId: activeCallRoom,
+          peerId: myPeerId,
+          isAudioMuted,
+          isVideoOff,
+          isHandRaised: nextRaised,
         })
       );
     }
@@ -739,29 +830,38 @@ function App() {
     }
   };
 
-  // WebRTC Video Calling ("Instant PCS Meet Room") Lifecycle
-  const createPeerConnection = (roomId) => {
-    if (peerConnectionRef.current && peerConnectionRef.current.signalingState !== 'closed') {
+  // WebRTC Video Calling ("Instant PCS Meet Room" - Multi-Peer Mesh Engine)
+  const createPeerConnection = (remotePeerId, remotePeerName, isInitiator, targetRoom) => {
+    const cleanRoom = (targetRoom || activeCallRoom || '').trim().toLowerCase();
+
+    // Close any previous connection to this specific peer
+    if (peerConnectionsRef.current.has(remotePeerId)) {
       try {
-        peerConnectionRef.current.close();
+        peerConnectionsRef.current.get(remotePeerId).close();
       } catch (e) {}
+      peerConnectionsRef.current.delete(remotePeerId);
     }
 
-    const cleanRoom = (roomId || activeCallRoom || '').trim().toLowerCase();
     const pc = new RTCPeerConnection({ iceServers: iceServersList });
-    peerConnectionRef.current = pc;
-    setCallQuality('connecting');
+    peerConnectionsRef.current.set(remotePeerId, pc);
 
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
+    if (!peerIceQueuesRef.current.has(remotePeerId)) {
+      peerIceQueuesRef.current.set(remotePeerId, []);
+    }
+
+    // Attach local media stream (camera or screen share)
+    const currentStream = screenStreamRef.current || localStreamRef.current;
+    if (currentStream) {
+      currentStream.getTracks().forEach((track) => {
         try {
-          pc.addTrack(track, localStreamRef.current);
+          pc.addTrack(track, currentStream);
         } catch (e) {
           console.warn('Track addition error:', e);
         }
       });
     }
 
+    // Add audio/video transceivers for robust dual-direction stream negotiation
     try {
       const transceivers = pc.getTransceivers();
       const hasAudio = transceivers.some(t => t.receiver && t.receiver.track && t.receiver.track.kind === 'audio');
@@ -770,93 +870,109 @@ function App() {
       if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
     } catch (e) {}
 
+    // On remote track arrival from this specific peer
     pc.ontrack = (event) => {
-      console.log('[WebRTC] ontrack event:', event.track.kind);
+      console.log(`[WebRTC Mesh] ontrack from ${remotePeerId}:`, event.track.kind);
       let stream = event.streams && event.streams[0];
       if (!stream) {
-        if (!remoteStreamRef.current) {
-          remoteStreamRef.current = new MediaStream();
+        if (!remoteStreamsRef.current.has(remotePeerId)) {
+          remoteStreamsRef.current.set(remotePeerId, new MediaStream());
         }
-        remoteStreamRef.current.addTrack(event.track);
-        stream = remoteStreamRef.current;
+        const s = remoteStreamsRef.current.get(remotePeerId);
+        s.addTrack(event.track);
+        stream = s;
       } else {
-        remoteStreamRef.current = stream;
+        remoteStreamsRef.current.set(remotePeerId, stream);
       }
 
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = stream;
-        remoteVideoRef.current.play().catch((err) => console.warn('Remote video play blocked:', err));
-      }
+      setConnectedPeers((prev) => {
+        const idx = prev.findIndex((p) => p.peerId === remotePeerId);
+        if (idx !== -1) {
+          const updated = [...prev];
+          updated[idx] = { ...updated[idx], stream };
+          return updated;
+        } else {
+          return [
+            ...prev,
+            {
+              peerId: remotePeerId,
+              name: remotePeerName || 'Participant',
+              stream,
+              isHost: false,
+              isAudioMuted: false,
+              isVideoOff: false,
+              isHandRaised: false,
+              quality: 'stable',
+            },
+          ];
+        }
+      });
       setIsCallConnected(true);
-      setCallStatusText('Connected with peer');
+      setCallStatusText('Connected in meeting');
     };
 
+    // ICE Candidate handler for this peer
     pc.onicecandidate = (event) => {
       if (event.candidate && wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN) {
         wsSignalingRef.current.send(
           JSON.stringify({
             type: 'signal',
             roomId: cleanRoom,
+            toPeerId: remotePeerId,
+            fromPeerId: myPeerId,
             payload: { candidate: event.candidate },
           })
         );
       }
     };
 
-    // Automatic ICE Restart and Connection Health Detection
+    // Connection health monitoring
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
-      console.log('[WebRTC] ICE state:', state);
+      console.log(`[WebRTC] ICE with ${remotePeerId}:`, state);
       if (state === 'connected' || state === 'completed') {
         setCallQuality('stable');
         setIsCallConnected(true);
-        setCallStatusText('Connected with peer');
-      } else if (state === 'disconnected') {
-        setCallQuality('reconnecting');
-        setCallStatusText('Network fluctuation. Reconnecting...');
+        setCallStatusText('Connected in meeting');
       } else if (state === 'failed') {
-        setCallQuality('reconnecting');
-        setCallStatusText('Connection interrupted. Attempting ICE restart...');
         if (typeof pc.restartIce === 'function') {
           pc.restartIce();
         }
-      } else if (state === 'closed') {
-        setCallQuality('failed');
-        setIsCallConnected(false);
       }
     };
 
     pc.onconnectionstatechange = () => {
-      console.log('[WebRTC] Connection state:', pc.connectionState);
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        setIsCallConnected(false);
-        setCallQuality('reconnecting');
-        setCallStatusText('Peer disconnected. Waiting for reconnection...');
-      } else if (pc.connectionState === 'connected') {
+      if (pc.connectionState === 'connected') {
         setIsCallConnected(true);
         setCallQuality('stable');
-        setCallStatusText('Connected with peer');
+        setCallStatusText('Connected in meeting');
       }
     };
 
-    // Monitor WebRTC stream stats every 3 seconds for relay/direct health
-    if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
-    statsIntervalRef.current = setInterval(async () => {
-      if (!pc || pc.connectionState !== 'connected') return;
-      try {
-        const stats = await pc.getStats();
-        stats.forEach((report) => {
-          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-            const localCandidate = stats.get(report.localCandidateId);
-            if (localCandidate && localCandidate.candidateType === 'relay') {
-              setCallQuality('relayed');
-            } else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-              setCallQuality('stable');
+    // If designated as initiator for this peer, create and send the offer
+    if (isInitiator) {
+      setTimeout(async () => {
+        try {
+          if (pc.signalingState !== 'closed') {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN) {
+              wsSignalingRef.current.send(
+                JSON.stringify({
+                  type: 'signal',
+                  roomId: cleanRoom,
+                  toPeerId: remotePeerId,
+                  fromPeerId: myPeerId,
+                  payload: { offer },
+                })
+              );
             }
           }
-        });
-      } catch (e) {}
-    }, 3000);
+        } catch (err) {
+          console.warn(`Offer creation error for ${remotePeerId}:`, err);
+        }
+      }, 50);
+    }
 
     return pc;
   };
@@ -923,7 +1039,16 @@ function App() {
       setIsCallConnected(false);
       setIsCallMinimized(false);
       setIsHostInCall(isHost);
+      setConnectedPeers([]);
       setCallStatusText(isHost ? 'Room created! Waiting for others to join...' : 'Joining room and connecting...');
+
+      // Close any previous peer connections
+      peerConnectionsRef.current.forEach((pc) => {
+        try { pc.close(); } catch (e) {}
+      });
+      peerConnectionsRef.current.clear();
+      remoteStreamsRef.current.clear();
+      peerIceQueuesRef.current.clear();
 
       // Acquire camera & microphone
       let stream;
@@ -946,18 +1071,25 @@ function App() {
       }
 
       // Connect to WebSocket signaling server
+      if (wsSignalingRef.current) {
+        try { wsSignalingRef.current.close(); } catch (e) {}
+      }
       const wsUrl = getWsUrl('/ws');
       const ws = new WebSocket(wsUrl);
       wsSignalingRef.current = ws;
 
+      const myDisplayName = (guestName.trim() || (isHost ? 'Host' : 'Participant'));
+
       ws.onopen = () => {
-        if (isHost) {
-          ws.send(JSON.stringify({ type: 'host-join', roomId: cleanRoom }));
-          showToast(`Started Room: #${cleanRoom}`);
-        } else {
-          ws.send(JSON.stringify({ type: 'join-room', roomId: cleanRoom }));
-          showToast(`Joined Room: #${cleanRoom}`);
-        }
+        const joinPayload = {
+          type: isHost ? 'host-join' : 'join-room',
+          roomId: cleanRoom,
+          peerId: myPeerId,
+          name: myDisplayName,
+          officeId: guestOfficeId.trim() || '',
+        };
+        ws.send(JSON.stringify(joinPayload));
+        showToast(isHost ? `Started Meeting: #${cleanRoom}` : `Joined Meeting: #${cleanRoom}`);
       };
 
       ws.onmessage = async (msgEvent) => {
@@ -979,97 +1111,188 @@ function App() {
             }
           } else if (data.type === 'guest-admitted-ack') {
             setPendingKnocks((prev) => prev.filter((k) => k.id !== data.guestId));
+          } else if (data.type === 'room-users') {
+            // Newly joined peer receives list of all existing participants in the room
+            const existing = (data.peers || []).filter((p) => p.peerId !== myPeerId);
+            setConnectedPeers(
+              existing.map((p) => ({
+                peerId: p.peerId,
+                name: p.name || 'Participant',
+                isHost: Boolean(p.isHost),
+                stream: null,
+                isAudioMuted: Boolean(p.isAudioMuted),
+                isVideoOff: Boolean(p.isVideoOff),
+                isHandRaised: Boolean(p.isHandRaised),
+                quality: 'connecting',
+              }))
+            );
+            if (existing.length > 0) {
+              setCallStatusText('Connecting to participants...');
+              // As the new joiner, initiate offer to each existing participant
+              existing.forEach((p) => {
+                createPeerConnection(p.peerId, p.name, true, cleanRoom);
+              });
+            } else {
+              setCallStatusText(isHost ? 'Waiting for others to join...' : 'Waiting for host and participants...');
+            }
           } else if (data.type === 'peer-joined') {
-            showToast('Participant in room! Connecting WebRTC...');
-            setCallStatusText(data.initiator ? 'Peer detected! Sending call offer...' : 'Connected to room! Awaiting stream...');
-            
-            // Only the designated initiator creates the offer to avoid collision/glare
-            if (data.initiator) {
-              const pc = createPeerConnection(cleanRoom);
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              ws.send(
-                JSON.stringify({
-                  type: 'signal',
-                  roomId: cleanRoom,
-                  payload: { offer },
-                })
-              );
+            // Another peer joined the room
+            const newPeer = data.peer;
+            if (newPeer && newPeer.peerId !== myPeerId) {
+              setConnectedPeers((prev) => {
+                if (prev.some((p) => p.peerId === newPeer.peerId)) return prev;
+                return [
+                  ...prev,
+                  {
+                    peerId: newPeer.peerId,
+                    name: newPeer.name || 'Participant',
+                    isHost: Boolean(newPeer.isHost),
+                    stream: null,
+                    isAudioMuted: Boolean(newPeer.isAudioMuted),
+                    isVideoOff: Boolean(newPeer.isVideoOff),
+                    isHandRaised: Boolean(newPeer.isHandRaised),
+                    quality: 'connecting',
+                  },
+                ];
+              });
+              showToast(`${newPeer.name || 'Participant'} joined the meeting`);
+              setCallStatusText('Participant joined! Connecting...');
+              // The new peer will create the offer; we will receive it via 'signal'
             }
           } else if (data.type === 'signal') {
-            const { payload } = data;
-            if (!payload) return;
+            const { fromPeerId, payload } = data;
+            if (!fromPeerId || !payload) return;
 
             if (payload.offer) {
-              console.log('[WebRTC] Received remote offer');
-              const pc = createPeerConnection(cleanRoom);
+              console.log(`[WebRTC Mesh] Received offer from ${fromPeerId}`);
+              let pc = peerConnectionsRef.current.get(fromPeerId);
+              if (!pc || pc.signalingState === 'closed') {
+                const peerObj = connectedPeers.find((p) => p.peerId === fromPeerId);
+                pc = createPeerConnection(fromPeerId, peerObj ? peerObj.name : 'Participant', false, cleanRoom);
+              }
               await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
 
-              while (iceCandidatesQueue.current.length > 0) {
-                const candidate = iceCandidatesQueue.current.shift();
+              // Drain any queued ICE candidates for this peer
+              const queue = peerIceQueuesRef.current.get(fromPeerId) || [];
+              while (queue.length > 0) {
+                const c = queue.shift();
                 try {
-                  await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                  await pc.addIceCandidate(new RTCIceCandidate(c));
                 } catch (e) {
-                  console.warn('Draining ICE candidate error:', e);
+                  console.warn('ICE drain error:', e);
                 }
               }
 
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
-              ws.send(
-                JSON.stringify({
-                  type: 'signal',
-                  roomId: cleanRoom,
-                  payload: { answer },
-                })
-              );
-              setCallStatusText('Connecting to peer...');
-            } else if (payload.answer) {
-              console.log('[WebRTC] Received remote answer');
-              if (peerConnectionRef.current && peerConnectionRef.current.signalingState === 'have-local-offer') {
-                await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.answer));
-                setIsCallConnected(true);
-                setCallStatusText('Connected with peer');
 
-                while (iceCandidatesQueue.current.length > 0) {
-                  const candidate = iceCandidatesQueue.current.shift();
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'signal',
+                    roomId: cleanRoom,
+                    toPeerId: fromPeerId,
+                    fromPeerId: myPeerId,
+                    payload: { answer },
+                  })
+                );
+              }
+            } else if (payload.answer) {
+              console.log(`[WebRTC Mesh] Received answer from ${fromPeerId}`);
+              const pc = peerConnectionsRef.current.get(fromPeerId);
+              if (pc && pc.signalingState === 'have-local-offer') {
+                await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
+                setIsCallConnected(true);
+                setCallStatusText('Connected in meeting');
+
+                const queue = peerIceQueuesRef.current.get(fromPeerId) || [];
+                while (queue.length > 0) {
+                  const c = queue.shift();
                   try {
-                    await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+                    await pc.addIceCandidate(new RTCIceCandidate(c));
                   } catch (e) {
-                    console.warn('Draining ICE candidate error:', e);
+                    console.warn('ICE drain error:', e);
                   }
                 }
               }
             } else if (payload.candidate) {
-              if (peerConnectionRef.current && peerConnectionRef.current.remoteDescription) {
+              const pc = peerConnectionsRef.current.get(fromPeerId);
+              if (pc && pc.remoteDescription) {
                 try {
-                  await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
+                  await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
                 } catch (e) {
                   console.warn('addIceCandidate error:', e);
                 }
               } else {
-                iceCandidatesQueue.current.push(payload.candidate);
+                if (!peerIceQueuesRef.current.has(fromPeerId)) {
+                  peerIceQueuesRef.current.set(fromPeerId, []);
+                }
+                peerIceQueuesRef.current.get(fromPeerId).push(payload.candidate);
               }
             }
           } else if (data.type === 'peer-left' || data.type === 'host-left') {
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = null;
+            const leavingPeerId = data.peerId;
+            if (leavingPeerId) {
+              if (peerConnectionsRef.current.has(leavingPeerId)) {
+                try {
+                  peerConnectionsRef.current.get(leavingPeerId).close();
+                } catch (e) {}
+                peerConnectionsRef.current.delete(leavingPeerId);
+              }
+              remoteStreamsRef.current.delete(leavingPeerId);
+              peerIceQueuesRef.current.delete(leavingPeerId);
+
+              setConnectedPeers((prev) => {
+                const leaving = prev.find((p) => p.peerId === leavingPeerId);
+                if (leaving) {
+                  showToast(`${leaving.name || 'Participant'} left the meeting`);
+                }
+                const updated = prev.filter((p) => p.peerId !== leavingPeerId);
+                if (updated.length === 0) {
+                  setIsCallConnected(false);
+                  setCallStatusText('Waiting for others to join...');
+                }
+                return updated;
+              });
+              if (pinnedParticipant === leavingPeerId) {
+                setPinnedParticipant(null);
+                setMeetingLayout('grid');
+              }
             }
-            remoteStreamRef.current = null;
-            setIsCallConnected(false);
-            setCallStatusText('Peer left the room. Waiting for others to join...');
-            showToast('Peer left the meeting');
+          } else if (data.type === 'peer-status-update') {
+            const { peerId: targetId, isAudioMuted: m, isVideoOff: v, isHandRaised: h } = data;
+            setConnectedPeers((prev) =>
+              prev.map((p) => {
+                if (p.peerId === targetId) {
+                  return {
+                    ...p,
+                    isAudioMuted: typeof m === 'boolean' ? m : p.isAudioMuted,
+                    isVideoOff: typeof v === 'boolean' ? v : p.isVideoOff,
+                    isHandRaised: typeof h === 'boolean' ? h : p.isHandRaised,
+                  };
+                }
+                return p;
+              })
+            );
+          } else if (data.type === 'raise-hand') {
+            const { peerId: targetId, isRaised, senderName } = data;
+            setConnectedPeers((prev) =>
+              prev.map((p) => {
+                if (p.peerId === targetId) {
+                  return { ...p, isHandRaised: Boolean(isRaised) };
+                }
+                return p;
+              })
+            );
+            if (isRaised) {
+              showToast(`${senderName || 'Participant'} raised hand`);
+            }
           } else if (data.type === 'chat-message') {
             if (data.message) {
               setChatMessages((prev) => {
                 if (prev.some((m) => m.id === data.message.id)) return prev;
                 return [...prev, data.message];
               });
-            }
-          } else if (data.type === 'raise-hand') {
-            setPeerHandRaised(Boolean(data.isRaised));
-            if (data.isRaised) {
-              showToast(`${data.senderName || 'Participant'} raised hand`);
             }
           }
         } catch (err) {
@@ -1097,6 +1320,18 @@ function App() {
       });
       setIsAudioMuted(willBeMuted);
       showToast(willBeMuted ? 'Microphone muted' : 'Microphone unmuted');
+      if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN) {
+        wsSignalingRef.current.send(
+          JSON.stringify({
+            type: 'peer-status',
+            roomId: activeCallRoom,
+            peerId: myPeerId,
+            isAudioMuted: willBeMuted,
+            isVideoOff,
+            isHandRaised,
+          })
+        );
+      }
     }
   };
 
@@ -1110,6 +1345,18 @@ function App() {
       });
       setIsVideoOff(willBeOff);
       showToast(willBeOff ? 'Camera turned off' : 'Camera turned on');
+      if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN) {
+        wsSignalingRef.current.send(
+          JSON.stringify({
+            type: 'peer-status',
+            roomId: activeCallRoom,
+            peerId: myPeerId,
+            isAudioMuted,
+            isVideoOff: willBeOff,
+            isHandRaised,
+          })
+        );
+      }
     }
   };
 
@@ -1121,11 +1368,13 @@ function App() {
 
     if (localStreamRef.current) {
       const cameraTrack = localStreamRef.current.getVideoTracks()[0];
-      if (peerConnectionRef.current && cameraTrack) {
-        const sender = peerConnectionRef.current.getSenders().find((s) => s.track && s.track.kind === 'video');
-        if (sender) {
-          sender.replaceTrack(cameraTrack);
-        }
+      if (cameraTrack) {
+        peerConnectionsRef.current.forEach((pc) => {
+          const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+          if (sender) {
+            sender.replaceTrack(cameraTrack).catch(console.warn);
+          }
+        });
       }
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
@@ -1143,12 +1392,12 @@ function App() {
         screenStreamRef.current = screenStream;
         const screenTrack = screenStream.getVideoTracks()[0];
 
-        if (peerConnectionRef.current) {
-          const sender = peerConnectionRef.current.getSenders().find((s) => s.track && s.track.kind === 'video');
-          if (sender) {
-            sender.replaceTrack(screenTrack);
+        peerConnectionsRef.current.forEach((pc) => {
+          const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+          if (sender && screenTrack) {
+            sender.replaceTrack(screenTrack).catch(console.warn);
           }
-        }
+        });
 
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = screenStream;
@@ -1181,18 +1430,21 @@ function App() {
       clearInterval(statsIntervalRef.current);
       statsIntervalRef.current = null;
     }
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
+    peerConnectionsRef.current.forEach((pc) => {
+      try { pc.close(); } catch (e) {}
+    });
+    peerConnectionsRef.current.clear();
+    remoteStreamsRef.current.clear();
+    peerIceQueuesRef.current.clear();
+    peerAudioAnalysersRef.current.clear();
+
     if (wsSignalingRef.current) {
       wsSignalingRef.current.close();
       wsSignalingRef.current = null;
     }
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
 
-    iceCandidatesQueue.current = [];
+    setConnectedPeers([]);
     setActiveCallRoom(null);
     setIsCallConnected(false);
     setCallQuality('connecting');
@@ -1206,17 +1458,11 @@ function App() {
     setGuestKnockStatus('idle');
     setCallDuration(0);
     setIsHandRaised(false);
-    setPeerHandRaised(false);
     setMeetingDrawerTab(null);
     setMeetingLayout('grid');
     setPinnedParticipant(null);
     setIsLocalSpeaking(false);
-    setIsRemoteSpeaking(false);
     setIsCallFullscreen(false);
-    if (remoteStreamRef.current) {
-      remoteStreamRef.current.getTracks().forEach((track) => track.stop());
-      remoteStreamRef.current = null;
-    }
 
     if (window.location.search.includes('room=')) {
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -1282,125 +1528,15 @@ function App() {
         if (data.type === 'knock-status') {
           setIsHostOnlineInRoom(Boolean(data.isHostOnline));
         } else if (data.type === 'guest-admitted') {
-          showToast('Admitted by host! Connecting video call...');
+          showToast('Admitted by host! Connecting to meeting...');
           setGuestKnockStatus('admitted');
           setIsGuestMode(false);
-          setActiveCallRoom(cleanRoom);
-          window.history.pushState({}, document.title, `?room=${cleanRoom}`);
-          setCallStatusText('Host admitted you. Activating camera & connecting...');
-
-          let stream;
-          try {
-            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-          } catch (mediaErr) {
-            console.warn('Camera/Mic permission failed or denied, trying audio only:', mediaErr);
-            try {
-              stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            } catch (audioErr) {
-              console.warn('Audio only also failed:', audioErr);
-              stream = new MediaStream();
-            }
-          }
-
-          localStreamRef.current = stream;
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = stream;
-            localVideoRef.current.play().catch(() => {});
-          }
+          try { ws.close(); } catch (e) {}
+          handleJoinCallRoom(cleanRoom, false);
         } else if (data.type === 'guest-denied') {
           setGuestKnockStatus('denied');
           setGuestDeniedReason(data.reason || 'The meeting host declined admission for this session.');
           showToast('Admission declined by host');
-        } else if (data.type === 'peer-joined') {
-          setCallStatusText('Connecting WebRTC...');
-          if (data.initiator) {
-            const pc = createPeerConnection(cleanRoom);
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            ws.send(
-              JSON.stringify({
-                type: 'signal',
-                roomId: cleanRoom,
-                payload: { offer },
-              })
-            );
-          } else {
-            createPeerConnection(cleanRoom);
-            setCallStatusText('Connected! Awaiting video offer...');
-          }
-        } else if (data.type === 'signal') {
-          const { payload } = data;
-          if (!payload) return;
-
-          if (payload.offer) {
-            const pc = createPeerConnection(cleanRoom);
-            await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
-
-            while (iceCandidatesQueue.current.length > 0) {
-              const candidate = iceCandidatesQueue.current.shift();
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(candidate));
-              } catch (e) {
-                console.warn('Buffered ICE error:', e);
-              }
-            }
-
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            ws.send(
-              JSON.stringify({
-                type: 'signal',
-                roomId: cleanRoom,
-                payload: { answer },
-              })
-            );
-            setCallStatusText('Connecting to peer...');
-          } else if (payload.answer) {
-            if (peerConnectionRef.current && peerConnectionRef.current.signalingState === 'have-local-offer') {
-              await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.answer));
-              setIsCallConnected(true);
-              setCallStatusText('Connected with peer');
-
-              while (iceCandidatesQueue.current.length > 0) {
-                const candidate = iceCandidatesQueue.current.shift();
-                try {
-                  await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-                } catch (e) {
-                  console.warn('Buffered ICE error:', e);
-                }
-              }
-            }
-          } else if (payload.candidate) {
-            if (peerConnectionRef.current && peerConnectionRef.current.remoteDescription) {
-              try {
-                await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
-              } catch (e) {
-                console.warn('ICE add error:', e);
-              }
-            } else {
-              iceCandidatesQueue.current.push(payload.candidate);
-            }
-          }
-        } else if (data.type === 'peer-left' || data.type === 'host-left') {
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = null;
-          }
-          remoteStreamRef.current = null;
-          setIsCallConnected(false);
-          setCallStatusText('Host left or ended the meeting.');
-          showToast('Host disconnected from call');
-        } else if (data.type === 'chat-message') {
-          if (data.message) {
-            setChatMessages((prev) => {
-              if (prev.some((m) => m.id === data.message.id)) return prev;
-              return [...prev, data.message];
-            });
-          }
-        } else if (data.type === 'raise-hand') {
-          setPeerHandRaised(Boolean(data.isRaised));
-          if (data.isRaised) {
-            showToast(`${data.senderName || 'Participant'} raised hand`);
-          }
         }
       } catch (err) {
         console.error('Guest signaling error:', err);
@@ -1450,6 +1586,9 @@ function App() {
       showToast('Guest denied entry');
     }
   };
+
+  const handleAdmitKnockGuest = handleAdmitGuest;
+  const handleDenyKnockGuest = handleDenyGuest;
 
   const handleCopyPublicPortalLink = () => {
     const origin = publicBaseUrl || getPublicWebOrigin();
@@ -2164,6 +2303,7 @@ function App() {
     if (!activeCallRoom) {
       setIsLocalSpeaking(false);
       setIsRemoteSpeaking(false);
+      setSpeakingPeers(new Set());
       return;
     }
     let audioCtx = null;
@@ -2174,8 +2314,6 @@ function App() {
       audioCtx = new AudioContextClass();
 
       let localAnalyser = null;
-      let remoteAnalyser = null;
-
       if (localStreamRef.current && localStreamRef.current.getAudioTracks().length > 0) {
         try {
           const src = audioCtx.createMediaStreamSource(localStreamRef.current);
@@ -2185,14 +2323,19 @@ function App() {
         } catch (e) {}
       }
 
-      if (remoteStreamRef.current && remoteStreamRef.current.getAudioTracks().length > 0) {
-        try {
-          const src = audioCtx.createMediaStreamSource(remoteStreamRef.current);
-          remoteAnalyser = audioCtx.createAnalyser();
-          remoteAnalyser.fftSize = 256;
-          src.connect(remoteAnalyser);
-        } catch (e) {}
-      }
+      // Analysers for all active remote mesh peers
+      const remoteAnalysers = new Map();
+      remoteStreamsRef.current.forEach((stream, peerId) => {
+        if (stream && stream.getAudioTracks().length > 0) {
+          try {
+            const src = audioCtx.createMediaStreamSource(stream);
+            const a = audioCtx.createAnalyser();
+            a.fftSize = 256;
+            src.connect(a);
+            remoteAnalysers.set(peerId, a);
+          } catch (e) {}
+        }
+      });
 
       const checkVolume = () => {
         if (localAnalyser && !isAudioMuted) {
@@ -2204,14 +2347,25 @@ function App() {
           setIsLocalSpeaking(false);
         }
 
-        if (remoteAnalyser) {
-          const arr = new Uint8Array(remoteAnalyser.frequencyBinCount);
-          remoteAnalyser.getByteFrequencyData(arr);
+        const activeSpeaking = new Set();
+        let anyRemote = false;
+        remoteAnalysers.forEach((analyser, peerId) => {
+          const arr = new Uint8Array(analyser.frequencyBinCount);
+          analyser.getByteFrequencyData(arr);
           const avg = arr.reduce((acc, v) => acc + v, 0) / arr.length;
-          setIsRemoteSpeaking(avg > 18);
-        } else {
-          setIsRemoteSpeaking(false);
-        }
+          if (avg > 18) {
+            activeSpeaking.add(peerId);
+            anyRemote = true;
+          }
+        });
+        setIsRemoteSpeaking(anyRemote);
+        setSpeakingPeers((prev) => {
+          if (prev.size !== activeSpeaking.size) return activeSpeaking;
+          for (const id of activeSpeaking) {
+            if (!prev.has(id)) return activeSpeaking;
+          }
+          return prev;
+        });
 
         animId = requestAnimationFrame(checkVolume);
       };
@@ -2229,7 +2383,7 @@ function App() {
         } catch (e) {}
       }
     };
-  }, [activeCallRoom, isAudioMuted, isCallConnected]);
+  }, [activeCallRoom, isAudioMuted, connectedPeers]);
 
   // Google Meet Keyboard Shortcuts: Ctrl+D for Mic, Ctrl+E for Camera
   useEffect(() => {
@@ -5517,6 +5671,7 @@ function App() {
                   <span className="live-call-indicator"></span>
                   <span className="meet-pip-room">#{activeCallRoom}</span>
                   <span className="meet-pip-timer">{formatMeetingDuration(callDuration)}</span>
+                  <span className="meet-pip-participants-badge">{connectedPeers.length + 1}</span>
                 </div>
                 <div className="meet-pip-actions">
                   <button
@@ -5538,39 +5693,54 @@ function App() {
                 </div>
               </div>
               <div className="meet-pip-video-wrap">
-                {isCallConnected ? (
-                  <video
-                    ref={(el) => {
-                      remoteVideoRef.current = el;
-                      if (el && remoteStreamRef.current && el.srcObject !== remoteStreamRef.current) {
-                        el.srcObject = remoteStreamRef.current;
-                        el.play().catch(() => {});
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    className="meet-pip-video"
-                  />
-                ) : isVideoOff ? (
-                  <div className="meet-pip-avatar">
-                    <span>{guestName ? guestName.charAt(0).toUpperCase() : 'Y'}</span>
-                  </div>
-                ) : (
-                  <video
-                    ref={(el) => {
-                      localVideoRef.current = el;
-                      const s = screenStreamRef.current || localStreamRef.current;
-                      if (el && s && el.srcObject !== s) {
-                        el.srcObject = s;
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={`meet-pip-video ${isScreenSharing ? '' : 'local-mirror'}`}
-                  />
-                )}
-                {isCallConnected && (
+                {(() => {
+                  const activePipPeer = connectedPeers.find((p) => speakingPeers.has(p.peerId)) || connectedPeers[0];
+                  if (activePipPeer) {
+                    if (activePipPeer.isVideoOff || !activePipPeer.stream) {
+                      return (
+                        <div className="meet-pip-avatar">
+                          <span>{(activePipPeer.name || 'P').charAt(0).toUpperCase()}</span>
+                        </div>
+                      );
+                    }
+                    return (
+                      <video
+                        ref={(el) => {
+                          if (el && activePipPeer.stream && el.srcObject !== activePipPeer.stream) {
+                            el.srcObject = activePipPeer.stream;
+                            el.play().catch(() => {});
+                          }
+                        }}
+                        autoPlay
+                        playsInline
+                        className="meet-pip-video"
+                      />
+                    );
+                  }
+                  if (isVideoOff) {
+                    return (
+                      <div className="meet-pip-avatar">
+                        <span>{guestName ? guestName.charAt(0).toUpperCase() : 'Y'}</span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <video
+                      ref={(el) => {
+                        localVideoRef.current = el;
+                        const s = screenStreamRef.current || localStreamRef.current;
+                        if (el && s && el.srcObject !== s) {
+                          el.srcObject = s;
+                        }
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      className={`meet-pip-video ${isScreenSharing ? '' : 'local-mirror'}`}
+                    />
+                  );
+                })()}
+                {connectedPeers.length > 0 && (
                   <div className="meet-pip-thumb">
                     {isVideoOff ? (
                       <div className="meet-pip-thumb-avatar">Y</div>
@@ -5657,8 +5827,11 @@ function App() {
                     className={`meet-top-btn ${meetingLayout === 'spotlight' ? 'active' : ''}`}
                     onClick={() => {
                       setMeetingLayout((prev) => (prev === 'grid' ? 'spotlight' : 'grid'));
-                      if (meetingLayout === 'grid') setPinnedParticipant('remote');
-                      else setPinnedParticipant(null);
+                      if (meetingLayout === 'grid') {
+                        setPinnedParticipant(connectedPeers.length > 0 ? connectedPeers[0].peerId : 'local');
+                      } else {
+                        setPinnedParticipant(null);
+                      }
                     }}
                     title={meetingLayout === 'grid' ? 'Switch to Spotlight View' : 'Switch to Grid View'}
                   >
@@ -5691,153 +5864,180 @@ function App() {
 
               {/* Center Stage Body */}
               <div className="meet-stage-body">
-                <div className={`meet-video-canvas ${meetingLayout === 'spotlight' ? 'spotlight-mode' : 'grid-mode'} ${isCallConnected ? 'two-participants' : 'one-participant'}`}>
-                  {/* Remote Video Tile */}
-                  <div
-                    className={`meet-video-tile remote-tile ${isRemoteSpeaking ? 'speaking' : ''} ${pinnedParticipant === 'remote' ? 'is-pinned-hero' : pinnedParticipant === 'local' ? 'is-pinned-thumb' : ''}`}
-                  >
-                    <video
-                      ref={(el) => {
-                        remoteVideoRef.current = el;
-                        if (el && remoteStreamRef.current && el.srcObject !== remoteStreamRef.current) {
-                          el.srcObject = remoteStreamRef.current;
-                          el.play().catch(() => {});
-                        }
-                      }}
-                      autoPlay
-                      playsInline
-                      className="meet-video-element remote-stream"
-                    />
-                    {!isCallConnected && (
-                      <div className="meet-waiting-hud">
-                        <div className="meet-waiting-pulse-avatar">
-                          <span className="material-symbols-outlined">group_add</span>
-                        </div>
-                        <h3 className="meet-waiting-title">Ready for your meeting</h3>
-                        <p className="meet-waiting-desc">
-                          {callStatusText || 'Waiting for other participants to join the call...'}
-                        </p>
-                        <div className="meet-waiting-actions">
-                          <button
-                            type="button"
-                            className="meet-waiting-copy-btn"
-                            onClick={handleCopyGuestLink}
-                          >
-                            <span className="material-symbols-outlined">content_copy</span>
-                            <span>Copy Joining Link</span>
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    {/* Remote Participant Bottom Pill */}
-                    <div className="meet-name-pill">
-                      <span className="mic-badge">
-                        <span className="material-symbols-outlined">
-                          {isCallConnected ? 'mic' : 'mic_off'}
-                        </span>
-                      </span>
-                      <span className="participant-title">
-                        {guestName ? `${guestName} (Remote)` : 'Remote Participant'}
-                      </span>
-                      {peerHandRaised && (
-                        <span className="raised-hand-badge">
-                          <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>
-                          <span>Hand raised</span>
-                        </span>
-                      )}
-                    </div>
-                    {/* Pin button */}
-                    <button
-                      type="button"
-                      className="meet-tile-pin-btn"
-                      onClick={() => {
-                        if (pinnedParticipant === 'remote') {
-                          setPinnedParticipant(null);
-                          setMeetingLayout('grid');
-                        } else {
-                          setPinnedParticipant('remote');
-                          setMeetingLayout('spotlight');
-                        }
-                      }}
-                      title={pinnedParticipant === 'remote' ? 'Unpin' : 'Pin to main view'}
-                    >
-                      <span className="material-symbols-outlined">
-                        {pinnedParticipant === 'remote' ? 'keep_off' : 'push_pin'}
-                      </span>
-                    </button>
-                  </div>
+                {(() => {
+                  const totalCallCount = connectedPeers.length + 1;
+                  const gridCountClass = totalCallCount === 1
+                    ? 'grid-count-1'
+                    : totalCallCount === 2
+                    ? 'grid-count-2'
+                    : totalCallCount <= 4
+                    ? 'grid-count-4'
+                    : totalCallCount <= 6
+                    ? 'grid-count-6'
+                    : totalCallCount <= 9
+                    ? 'grid-count-9'
+                    : 'grid-count-many';
 
-                  {/* Local Video Tile */}
-                  <div
-                    className={`meet-video-tile local-tile ${isLocalSpeaking ? 'speaking' : ''} ${pinnedParticipant === 'local' ? 'is-pinned-hero' : pinnedParticipant === 'remote' ? 'is-pinned-thumb' : ''}`}
-                  >
-                    {isVideoOff ? (
-                      <div className="meet-avatar-placeholder">
-                        <div className={`meet-avatar-circle local-avatar-circle ${isLocalSpeaking ? 'pulse-speaking' : ''}`}>
-                          <span>{guestName ? guestName.charAt(0).toUpperCase() : (isHostInCall ? 'H' : 'Y')}</span>
+                  const renderLocalTile = (isSpotHero = false) => (
+                    <div
+                      key="local-user-tile"
+                      className={`meet-video-tile local-tile ${isLocalSpeaking ? 'speaking' : ''} ${isSpotHero ? 'is-pinned-hero' : ''}`}
+                    >
+                      {isVideoOff ? (
+                        <div className="meet-avatar-placeholder">
+                          <div className={`meet-avatar-circle local-avatar-circle ${isLocalSpeaking ? 'pulse-speaking' : ''}`}>
+                            <span>{guestName ? guestName.charAt(0).toUpperCase() : (isHostInCall ? 'H' : 'Y')}</span>
+                          </div>
+                          <div className="meet-avatar-label">Camera is off</div>
                         </div>
-                        <div className="meet-avatar-label">Camera is off</div>
+                      ) : (
+                        <video
+                          ref={(el) => {
+                            localVideoRef.current = el;
+                            const s = screenStreamRef.current || localStreamRef.current;
+                            if (el && s && el.srcObject !== s) {
+                              el.srcObject = s;
+                            }
+                          }}
+                          autoPlay
+                          playsInline
+                          muted
+                          className={`meet-video-element ${isScreenSharing ? '' : 'local-mirror'}`}
+                        />
+                      )}
+                      <div className="meet-name-pill">
+                        <span className={`mic-badge ${isAudioMuted ? 'muted' : ''}`}>
+                          <span className="material-symbols-outlined">
+                            {isAudioMuted ? 'mic_off' : 'mic'}
+                          </span>
+                        </span>
+                        <span className="participant-title">
+                          You {isHostInCall ? '(Host)' : ''}
+                        </span>
+                        {isHandRaised && (
+                          <span className="raised-hand-badge">
+                            <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>
+                            <span>You raised hand</span>
+                          </span>
+                        )}
                       </div>
-                    ) : (
-                      <video
-                        ref={(el) => {
-                          localVideoRef.current = el;
-                          const s = screenStreamRef.current || localStreamRef.current;
-                          if (el && s && el.srcObject !== s) {
-                            el.srcObject = s;
+                      <button
+                        type="button"
+                        className="meet-tile-pin-btn"
+                        onClick={() => {
+                          if (pinnedParticipant === 'local') {
+                            setPinnedParticipant(null);
+                            setMeetingLayout('grid');
+                          } else {
+                            setPinnedParticipant('local');
+                            setMeetingLayout('spotlight');
                           }
                         }}
-                        autoPlay
-                        playsInline
-                        muted
-                        className={`meet-video-element ${isScreenSharing ? '' : 'local-mirror'}`}
-                      />
-                    )}
-                    {/* Local Participant Bottom Pill */}
-                    <div className="meet-name-pill">
-                      <span className={`mic-badge ${isAudioMuted ? 'muted' : ''}`}>
+                        title={pinnedParticipant === 'local' ? 'Unpin' : 'Pin to spotlight'}
+                      >
                         <span className="material-symbols-outlined">
-                          {isAudioMuted ? 'mic_off' : 'mic'}
+                          {pinnedParticipant === 'local' ? 'keep_off' : 'push_pin'}
                         </span>
-                      </span>
-                      <span className="participant-title">
-                        You {isHostInCall ? '(Host)' : ''}
-                      </span>
-                      {isHandRaised && (
-                        <span className="raised-hand-badge">
-                          <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>
-                          <span>You raised hand</span>
-                        </span>
+                      </button>
+                    </div>
+                  );
+
+                  if (meetingLayout === 'spotlight') {
+                    const pinnedPeer = pinnedParticipant === 'local' ? null : (connectedPeers.find((p) => p.peerId === pinnedParticipant) || connectedPeers[0]);
+                    const isLocalHero = pinnedParticipant === 'local' || (!pinnedPeer && connectedPeers.length === 0);
+
+                    return (
+                      <div className="meet-video-canvas spotlight-layout">
+                        <div className="meet-spotlight-hero">
+                          {isLocalHero ? (
+                            renderLocalTile(true)
+                          ) : (
+                            <RemoteParticipantTile
+                              peer={pinnedPeer}
+                              isSpeaking={speakingPeers.has(pinnedPeer.peerId)}
+                              isPinned={true}
+                              onPin={() => {
+                                setPinnedParticipant(null);
+                                setMeetingLayout('grid');
+                              }}
+                            />
+                          )}
+                        </div>
+                        <div className="meet-filmstrip">
+                          {!isLocalHero && (
+                            <div className="filmstrip-tile">
+                              {renderLocalTile(false)}
+                            </div>
+                          )}
+                          {connectedPeers
+                            .filter((p) => isLocalHero || p.peerId !== pinnedPeer?.peerId)
+                            .map((p) => (
+                              <div key={p.peerId} className="filmstrip-tile">
+                                <RemoteParticipantTile
+                                  peer={p}
+                                  isSpeaking={speakingPeers.has(p.peerId)}
+                                  isPinned={false}
+                                  onPin={() => {
+                                    setPinnedParticipant(p.peerId);
+                                    setMeetingLayout('spotlight');
+                                  }}
+                                />
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className={`meet-video-canvas grid-mode ${gridCountClass}`}>
+                      {renderLocalTile(false)}
+                      {connectedPeers.map((peer) => (
+                        <RemoteParticipantTile
+                          key={peer.peerId}
+                          peer={peer}
+                          isSpeaking={speakingPeers.has(peer.peerId)}
+                          isPinned={false}
+                          onPin={() => {
+                            setPinnedParticipant(peer.peerId);
+                            setMeetingLayout('spotlight');
+                          }}
+                        />
+                      ))}
+                      {connectedPeers.length === 0 && (
+                        <div className="meet-video-tile meet-waiting-tile">
+                          <div className="meet-waiting-hud">
+                            <div className="meet-waiting-pulse-avatar">
+                              <span className="material-symbols-outlined">group_add</span>
+                            </div>
+                            <h3 className="meet-waiting-title">Ready for your meeting</h3>
+                            <p className="meet-waiting-desc">
+                              {callStatusText || 'Waiting for other participants to join the call...'}
+                            </p>
+                            <div className="meet-waiting-actions">
+                              <button
+                                type="button"
+                                className="meet-waiting-copy-btn"
+                                onClick={handleCopyGuestLink}
+                              >
+                                <span className="material-symbols-outlined">content_copy</span>
+                                <span>Copy Joining Link</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
                       )}
                     </div>
-                    {/* Pin button */}
-                    <button
-                      type="button"
-                      className="meet-tile-pin-btn"
-                      onClick={() => {
-                        if (pinnedParticipant === 'local') {
-                          setPinnedParticipant(null);
-                          setMeetingLayout('grid');
-                        } else {
-                          setPinnedParticipant('local');
-                          setMeetingLayout('spotlight');
-                        }
-                      }}
-                      title={pinnedParticipant === 'local' ? 'Unpin' : 'Pin to main view'}
-                    >
-                      <span className="material-symbols-outlined">
-                        {pinnedParticipant === 'local' ? 'keep_off' : 'push_pin'}
-                      </span>
-                    </button>
-                  </div>
-                </div>
+                  );
+                })()}
 
                 {/* Pending Knock Banner for Host */}
                 {pendingKnocks.length > 0 && isHostInCall && (
                   <div className="meet-knocking-alert-strip">
                     <span className="material-symbols-outlined alert-icon">doorbell</span>
                     <div className="knocking-text">
-                      <strong>{pendingKnocks[0].name}</strong> ({pendingKnocks[0].officeId}) wants to join this meeting.
+                      <strong>{pendingKnocks[0].name}</strong> ({pendingKnocks[0].officeId})
+                      {pendingKnocks.length > 1 ? ` and ${pendingKnocks.length - 1} other${pendingKnocks.length > 2 ? 's' : ''}` : ''} wants to join this meeting.
                     </div>
                     <div className="knocking-btns">
                       <button
@@ -5847,6 +6047,17 @@ function App() {
                       >
                         Admit
                       </button>
+                      {pendingKnocks.length > 1 && (
+                        <button
+                          type="button"
+                          className="btn-admit-all"
+                          onClick={() => {
+                            pendingKnocks.forEach((k) => handleAdmitKnockGuest(k.id));
+                          }}
+                        >
+                          Admit All ({pendingKnocks.length})
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="btn-deny"
@@ -5930,7 +6141,7 @@ function App() {
                     title="People"
                   >
                     <span className="material-symbols-outlined">group</span>
-                    <span className="dock-badge">{isCallConnected ? '2' : '1'}</span>
+                    <span className="dock-badge">{connectedPeers.length + 1}</span>
                   </button>
 
                   {/* Meeting Info */}
@@ -5960,7 +6171,7 @@ function App() {
                     <div className="meet-drawer-header">
                       <h3 className="meet-drawer-title">
                         {meetingDrawerTab === 'chat' && 'In-call messages'}
-                        {meetingDrawerTab === 'people' && `People (${isCallConnected ? '2' : '1'})`}
+                        {meetingDrawerTab === 'people' && `People (${connectedPeers.length + 1})`}
                         {meetingDrawerTab === 'info' && 'Meeting details'}
                       </h3>
                       <div className="meet-drawer-hdr-actions">
@@ -6126,8 +6337,20 @@ function App() {
                           {/* Waiting Knock Requests */}
                           {pendingKnocks.length > 0 && (
                             <div className="meet-people-section">
-                              <div className="meet-people-section-hdr">
-                                Waiting Lobby ({pendingKnocks.length})
+                              <div className="meet-people-section-hdr" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span>Waiting Lobby ({pendingKnocks.length})</span>
+                                {pendingKnocks.length > 1 && isHostInCall && (
+                                  <button
+                                    type="button"
+                                    className="btn-admit-all"
+                                    style={{ fontSize: '11px', padding: '3px 10px' }}
+                                    onClick={() => {
+                                      pendingKnocks.forEach((k) => handleAdmitKnockGuest(k.id));
+                                    }}
+                                  >
+                                    Admit All
+                                  </button>
+                                )}
                               </div>
                               {pendingKnocks.map((k) => (
                                 <div key={k.id} className="meet-person-knock-card">
@@ -6160,7 +6383,7 @@ function App() {
                           {/* In-Call Participants */}
                           <div className="meet-people-section">
                             <div className="meet-people-section-hdr">
-                              In call ({isCallConnected ? '2' : '1'})
+                              In call ({connectedPeers.length + 1})
                             </div>
                             <div className="meet-person-card">
                               <div className="person-avatar local-avatar">
@@ -6185,29 +6408,51 @@ function App() {
                               </div>
                             </div>
 
-                            {isCallConnected && (
-                              <div className="meet-person-card">
-                                <div className="person-avatar remote-avatar">
-                                  {guestName ? guestName.charAt(0).toUpperCase() : 'R'}
-                                </div>
-                                <div className="person-info">
-                                  <span className="person-name">
-                                    {guestName ? `${guestName} (Remote)` : 'Remote Participant'}
-                                  </span>
-                                  <span className="person-role">Participant</span>
-                                </div>
-                                <div className="person-badges">
-                                  {peerHandRaised && (
-                                    <span className="hand-icon material-symbols-outlined" title="Hand raised">
-                                      front_hand
+                            {connectedPeers.map((peer) => {
+                              const pInit = (peer.name || 'P').charAt(0).toUpperCase();
+                              return (
+                                <div key={peer.peerId} className="meet-person-card">
+                                  <div className="person-avatar remote-avatar">{pInit}</div>
+                                  <div className="person-info">
+                                    <span className="person-name">
+                                      {peer.name || 'Participant'} {peer.officeId ? `(${peer.officeId})` : ''}
                                     </span>
-                                  )}
-                                  <span className="mic-icon material-symbols-outlined" title="Microphone on">
-                                    mic
-                                  </span>
+                                    <span className="person-role">{peer.isHost ? 'Meeting Host' : 'Participant'}</span>
+                                  </div>
+                                  <div className="person-badges">
+                                    {peer.isHandRaised && (
+                                      <span className="hand-icon material-symbols-outlined" title="Hand raised">
+                                        front_hand
+                                      </span>
+                                    )}
+                                    <span
+                                      className={`mic-icon material-symbols-outlined ${peer.isAudioMuted ? 'muted' : ''}`}
+                                      title={peer.isAudioMuted ? 'Muted' : 'Microphone on'}
+                                    >
+                                      {peer.isAudioMuted ? 'mic_off' : 'mic'}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="person-action-btn"
+                                      onClick={() => {
+                                        if (pinnedParticipant === peer.peerId) {
+                                          setPinnedParticipant(null);
+                                          setMeetingLayout('grid');
+                                        } else {
+                                          setPinnedParticipant(peer.peerId);
+                                          setMeetingLayout('spotlight');
+                                        }
+                                      }}
+                                      title={pinnedParticipant === peer.peerId ? 'Unpin' : 'Spotlight participant'}
+                                    >
+                                      <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
+                                        {pinnedParticipant === peer.peerId ? 'keep_off' : 'push_pin'}
+                                      </span>
+                                    </button>
+                                  </div>
                                 </div>
-                              </div>
-                            )}
+                              );
+                            })}
                           </div>
                         </div>
                       )}

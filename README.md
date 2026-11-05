@@ -29,10 +29,11 @@ Share the generated URL (`https://<subdomain>.loca.lt?room=<code>`) for instant 
 ## Core Features
 
 - **Google Meet-Style Video Calling**:
-  - Full-screen stage with 16:9 responsive video grid and spotlight pinning.
+  - Multi-user WebRTC mesh architecture supporting 3+ simultaneous participants.
+  - Dynamic responsive video grids (1, 2, 4, 6, 9+ tiles) and spotlight filmstrip view.
   - Active speaker halo detection via Web Audio API.
   - Floating pill dock with mic (`Ctrl+D`), camera (`Ctrl+E`), screen sharing, hand raising, and call end controls.
-  - Collapsible side drawer with in-call chat, attendee list, knocking lobby admission, and meeting info.
+  - Collapsible side drawer with in-call chat, live attendee roster, knocking lobby admission with Admit All, and meeting details.
   - Picture-in-Picture (PiP) multitasking mode for working during calls.
 
 - **Zero-Boundaries Quick Join**:
