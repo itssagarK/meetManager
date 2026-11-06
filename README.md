@@ -3,7 +3,8 @@
 An executive productivity workspace, real-time collaboration hub, and Chrome Side Panel Extension (Manifest V3) featuring Google Meet-style WebRTC calling, instant zero-boundary room joins, global team chat, and automated calendar invitations.
 ---
 
-Live Demo: [https://meetmanager-p55v.onrender.com](https://meetmanager-p55v.onrender.com)
+Live Demo: [https://meetmanager-p55v.onrender.com](https://meetmanager-p55v.onrender.com)  
+Full Architecture & Technical Documentation: [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md)
 
 ---
 
