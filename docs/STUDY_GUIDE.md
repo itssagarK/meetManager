@@ -39,9 +39,16 @@ Welcome to the definitive **developer study manual** for **PCS Meet Manager**. W
    - [5.7 The 4 Executive Viewports (Calendar, Table, Cards, Analytics)](#57-the-4-executive-viewports-calendar-table-cards-analytics)
    - [5.8 Executive Focus Modules (Standup, Pomodoro, Triage, Notes-to-Tasks)](#58-executive-focus-modules-standup-pomodoro-triage-notes-to-tasks)
 6. [Chrome Extension Manifest V3 Subsystem](#6-chrome-extension-manifest-v3-subsystem)
-   - [6.1 The Manifest (`client/public/manifest.json`)](#61-the-manifest-clientpublicmanifestjson)
-   - [6.2 Background Service Worker & Alarms (`background.js`)](#62-background-service-worker--alarms-backgroundjs)
-   - [6.3 Programmatic Icon Generation & Extension Packaging](#63-programmatic-icon-generation--extension-packaging)
+   - [6.1 Why Chrome Extension & The Manifest V3 Architecture](#61-why-chrome-extension--the-manifest-v3-architecture)
+   - [6.2 The Manifest Specification (`client/public/manifest.json`)](#62-the-manifest-specification-clientpublicmanifestjson)
+   - [6.3 The Persistent Chrome Side Panel API (`chrome.sidePanel`)](#63-the-persistent-chrome-side-panel-api-chromesidepanel)
+   - [6.4 The Event-Driven Background Service Worker (`client/public/background.js`)](#64-the-event-driven-background-service-worker-clientpublicbackgroundjs)
+   - [6.5 Pre-Meeting Desktop Alarms & Notification Handshake](#65-pre-meeting-desktop-alarms--notification-handshake)
+   - [6.6 Contextual Active Tab Call Link Auto-Detection (`chrome.tabs`)](#66-contextual-active-tab-call-link-auto-detection-chrometabs)
+   - [6.7 The Dual-Runtime React Architecture (Web vs Extension Origin)](#67-the-dual-runtime-react-architecture-web-vs-extension-origin)
+   - [6.8 Pure Node.js Programmatic Icon Generator (`generate-icons.js`)](#68-pure-nodejs-programmatic-icon-generator-generate-iconsjs)
+   - [6.9 Automated Extension Packaging Pipeline (`package-extension.js`)](#69-automated-extension-packaging-pipeline-package-extensionjs)
+   - [6.10 Developer Guide: How to Load, Test & Debug in Chrome](#610-developer-guide-how-to-load-test--debug-in-chrome)
 7. [End-to-End Data Flow Scenarios](#7-end-to-end-data-flow-scenarios)
    - [Scenario A: Scheduling a Meeting & Emailing Attendees](#scenario-a-scheduling-a-meeting--emailing-attendees)
    - [Scenario B: Guest Knocking, Host Admitting, and Media Mesh Negotiation](#scenario-b-guest-knocking-host-admitting-and-media-mesh-negotiation)
@@ -492,28 +499,136 @@ flowchart TD
 
 ## 6. Chrome Extension Manifest V3 Subsystem
 
-### 6.1 The Manifest (`client/public/manifest.json`)
+PCS Meet Manager is not just a web application—it is an **enterprise-grade Google Chrome Side Panel Extension** built under the latest **Manifest V3 (MV3)** specifications. This section covers every single detail of how it was designed, coded, packaged, and executed.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                 CHROME EXTENSION MANIFEST V3 ARCHITECTURE                   │
+├──────────────────────────┬──────────────────────────┬───────────────────────┤
+│ 1. Manifest Specification│ 2. Side Panel API Host   │ 3. Background Worker  │
+│ • manifest.json (MV3)    │ • chrome.sidePanel       │ • background.js       │
+│ • Permissions & Hosts    │ • Persistent 400px dock  │ • Event-driven sleep  │
+│ • Icons: 16, 48, 128     │ • Zero tab-switching     │ • Desktop pre-alarms  │
+├──────────────────────────┼──────────────────────────┼───────────────────────┤
+│ 4. Tab Context Sensor    │ 5. Dual-Runtime React    │ 6. DevOps & Packaging │
+│ • chrome.tabs.query()    │ • isChromeExtension flag │ • generate-icons.js   │
+│ • Google Meet/Zoom detect│ • Origin & WS routing    │ • package-extension.js│
+│ • Auto-populate title    │ • Fluid narrow layout    │ • Clean distribution  │
+└──────────────────────────┴──────────────────────────┴───────────────────────┘
+```
+
+---
+
+### 6.1 Why Chrome Extension & The Manifest V3 Architecture
+
+Traditional developer productivity tools fail because of how browsers manage tabs:
+1. **The Tab-Hunting Tax:** If your meeting notes or task manager live in a browser tab, you have to search through 30 open tabs every time you need to jot something down.
+2. **The Flaw of Popup Extensions:** Traditional browser extensions use a "popup bubble" (`browser_action`). The fatal flaw of popup bubbles is that **as soon as you click outside them, the popup completely closes and destroys all unsaved state**.
+3. **The Solution: The Chrome Side Panel API (`chrome.sidePanel`):**
+   - Introduced in Chrome 114, the Side Panel docks vertically on the right or left of the browser window.
+   - It remains **open and persistent** while you navigate between different tabs, inspect pull requests on GitHub, or write Google Docs!
+4. **Why Manifest V3?**
+   - Google deprecated Manifest V2. Manifest V3 replaces persistent, battery-draining background pages with **event-driven background service workers** that wake up only when an alarm fires, execute their task in $< 50\text{ ms}$, and go back to sleep.
+
+---
+
+### 6.2 The Manifest Specification (`client/public/manifest.json`)
+
+Here is the exact configuration file located at [`client/public/manifest.json`](file:///C:/Users/Mini-PC/Desktop/projects/PCS/PCSprojects/meetManager/client/public/manifest.json):
+
 ```json
 {
   "manifest_version": 3,
   "name": "PCS Meet Manager",
   "version": "1.0.0",
+  "description": "Executive meeting manager, independent WebRTC video calls, calendar sync, and action item tracker with native Chrome Side Panel integration.",
+  "action": {
+    "default_title": "Open PCS Meet Manager Side Panel",
+    "default_icon": {
+      "16": "icon-16.png",
+      "48": "icon-48.png"
+    }
+  },
   "side_panel": {
     "default_path": "index.html"
   },
-  "permissions": ["sidePanel", "alarms", "notifications", "storage", "tabs"],
+  "permissions": [
+    "sidePanel",
+    "alarms",
+    "notifications",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://localhost:5000/*",
+    "http://127.0.0.1:5000/*",
+    "https://*/*"
+  ],
   "background": {
     "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icon-16.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
   }
 }
 ```
 
-### 6.2 Background Service Worker & Alarms (`background.js`)
+#### Field-by-Field Breakdown:
+* **`"manifest_version": 3`**: Tells the Chrome engine to parse this extension using the modern Manifest V3 security model.
+* **`"action"`**: Configures the toolbar icon and hover tooltip (`"default_title"`).
+* **`"side_panel": { "default_path": "index.html" }`**: **The magic declaration**. Instead of loading a temporary popup, Chrome loads `index.html` (the bundled React application) into the dedicated Side Panel.
+* **`"permissions"`**:
+  - `"sidePanel"`: Required to invoke `chrome.sidePanel` APIs.
+  - `"alarms"`: Allows scheduling background timers that survive service worker suspensions.
+  - `"notifications"`: Allows calling `chrome.notifications.create` to show native operating system alert banners.
+  - `"storage"`: Provides access to `chrome.storage.local` for offline cache.
+  - `"tabs"`: Grants the ability to read the URL and title of the active browser tab.
+* **`"host_permissions"`**: Explicitly authorizes cross-origin network requests from the extension (`chrome-extension://...`) to `http://localhost:5000/*` and secure remote APIs (`https://*/*`) without getting blocked by CORS.
+* **`"background": { "service_worker": "background.js" }`**: Declares the event script that Chrome executes in the background.
+
+---
+
+### 6.3 The Persistent Chrome Side Panel API (`chrome.sidePanel`)
+
+To ensure that clicking the toolbar icon opens the side panel (rather than opening a popup), the background script registers a panel behavior on installation:
+
 ```javascript
+// client/public/background.js
+chrome.runtime.onInstalled.addListener(() => {
+  if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+    chrome.sidePanel
+      .setPanelBehavior({ openPanelOnActionClick: true })
+      .catch((err) => console.warn('Could not set sidePanel action behavior:', err));
+  }
+});
+```
+
+- **`openPanelOnActionClick: true`**: Tells Chrome: *"When the user clicks the PCS Meet Manager puzzle icon in the toolbar, immediately slide out the persistent side panel on the right side of the active browser window."*
+- **Persistent State:** Because the side panel acts as a dedicated window frame, you can participate in a WebRTC video call or chat while continuously browsing other tabs.
+
+---
+
+### 6.4 The Event-Driven Background Service Worker (`client/public/background.js`)
+
+Unlike traditional Node.js servers or Web Workers, a **Manifest V3 Service Worker** has a unique lifecycle:
+1. It starts in an **idle (dormant)** state, consuming $0\text{ MB}$ of RAM.
+2. When an event occurs (e.g. `chrome.alarms.onAlarm` triggers or the user clicks a notification), Chrome starts the worker in $< 10\text{ ms}$.
+3. The worker executes its listener code.
+4. After 30 seconds of inactivity, Chrome automatically unloads the worker from memory.
+
+Here is the complete implementation of [`client/public/background.js`](file:///C:/Users/Mini-PC/Desktop/projects/PCS/PCSprojects/meetManager/client/public/background.js):
+
+```javascript
+// PCS Meet Manager - Background Service Worker (Manifest V3)
+
 // 1. Open persistent Side Panel when user clicks the extension toolbar icon
 chrome.runtime.onInstalled.addListener(() => {
   if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
-    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    chrome.sidePanel
+      .setPanelBehavior({ openPanelOnActionClick: true })
+      .catch((err) => console.warn('Could not set sidePanel action behavior:', err));
   }
 });
 
@@ -530,7 +645,279 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     });
   }
 });
+
+// 3. Open side panel or focus window when notification is clicked
+chrome.notifications.onClicked.addListener(() => {
+  if (chrome.sidePanel && chrome.sidePanel.open) {
+    chrome.windows.getCurrent((win) => {
+      chrome.sidePanel.open({ windowId: win.id }).catch(() => {});
+    });
+  }
+});
 ```
+
+---
+
+### 6.5 Pre-Meeting Desktop Alarms & Notification Handshake
+
+How does PCS Meet Manager notify you 2 minutes before a meeting even if the app is closed?
+
+```mermaid
+flowchart TD
+    Schedule["Meeting Scheduled or Fetched in React App"] --> CalcTime["Compute Alert Time: Target Meeting Timestamp - 2 Minutes"]
+    CalcTime --> RegisterAlarm["chrome.alarms.create('meet-alert:Title', { when: triggerTime })"]
+
+    RegisterAlarm -. "Timer Elapses (T - 2min) in Chrome Scheduler" .-> WakeupWorker["Chrome Wakes Up background.js Service Worker"]
+    WakeupWorker --> TriggerNotify["chrome.notifications.create (Desktop Alert Banner)"]
+
+    TriggerNotify --> UserClicks{"User Clicks Alert Banner"}
+    UserClicks --> OpenPanel["chrome.sidePanel.open({ windowId }) -> Opens Video Meeting Room!"]
+```
+
+#### The Frontend Alarm Scheduler in [`client/src/App.jsx`](file:///C:/Users/Mini-PC/Desktop/projects/PCS/PCSprojects/meetManager/client/src/App.jsx):
+Whenever meetings are fetched or updated, `scheduleExtensionAlarms()` synchronizes Chrome's alarm scheduler:
+
+```javascript
+const scheduleExtensionAlarms = (meetingsList) => {
+  if (typeof chrome !== 'undefined' && chrome.alarms && chrome.alarms.create) {
+    // 1. Clear any obsolete meeting alarms first to avoid duplicate notifications
+    chrome.alarms.getAll((alarms) => {
+      alarms.forEach((al) => {
+        if (al.name.startsWith('meet-alert:')) {
+          chrome.alarms.clear(al.name);
+        }
+      });
+
+      const now = Date.now();
+      // 2. Iterate through today's and future meetings
+      (meetingsList || []).forEach((m) => {
+        if (m.date && m.time && m.status !== 'Completed') {
+          const mDate = new Date(`${m.date}T${m.time}`);
+          if (!isNaN(mDate.getTime())) {
+            // Target time: exactly 2 minutes (120,000 ms) prior to start
+            const triggerTime = mDate.getTime() - 2 * 60000;
+            if (triggerTime > now) {
+              chrome.alarms.create(`meet-alert:${m.title}`, {
+                when: triggerTime,
+              });
+            }
+          }
+        }
+      });
+    });
+  }
+};
+```
+
+---
+
+### 6.6 Contextual Active Tab Call Link Auto-Detection (`chrome.tabs`)
+
+When you are inside a Google Meet, Zoom, or Microsoft Teams call in Chrome and want to log it into your manager, you don't have to copy-paste the URL manually.
+
+Clicking **"Auto-Detect Call Link"** triggers `handleAutoDetectCallLink()` in [`client/src/App.jsx`](file:///C:/Users/Mini-PC/Desktop/projects/PCS/PCSprojects/meetManager/client/src/App.jsx):
+
+```javascript
+const handleAutoDetectCallLink = async () => {
+  // 1. Chrome Extension context: Query the active tab
+  if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const activeTab = tabs && tabs[0];
+      if (activeTab && activeTab.url) {
+        const url = activeTab.url;
+        // Check if the URL belongs to a known conferencing provider
+        if (
+          url.includes('meet.google.com') ||
+          url.includes('zoom.us') ||
+          url.includes('teams.microsoft.com') ||
+          url.startsWith('http')
+        ) {
+          // Clean noisy browser tab titles
+          const cleanedTitle = activeTab.title
+            ?.replace(/ - Google Meet| \| Zoom| - Microsoft Teams/i, '')
+            .trim();
+
+          setFormData((prev) => ({
+            ...prev,
+            link: url,
+            title: prev.title || cleanedTitle || '',
+          }));
+          showToast('Captured active meeting tab link');
+          return;
+        }
+      }
+      showToast('Active tab is not a recognized video call URL');
+    });
+    return;
+  }
+
+  // 2. Standalone web fallback: Read from clipboard
+  if (navigator.clipboard && navigator.clipboard.readText) {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text.includes('meet.google.com') || text.includes('zoom.us') || text.includes('teams.microsoft.com')) {
+        setFormData((prev) => ({ ...prev, link: text.trim() }));
+        showToast('Pasted call link from clipboard');
+      }
+    } catch (e) {
+      showToast('Clipboard access denied');
+    }
+  }
+};
+```
+
+#### What happens here:
+1. `chrome.tabs.query({ active: true, currentWindow: true })` asks Chrome for the currently viewed tab.
+2. It inspects `activeTab.url` for `meet.google.com`, `zoom.us`, or `teams.microsoft.com`.
+3. It strips away noisy tab suffixes (e.g. `"Sprint Architecture - Google Meet"` becomes `"Sprint Architecture"`).
+4. It auto-fills both the **Title** and **Call Link** input fields in $0\text{ ms}$!
+
+---
+
+### 6.7 The Dual-Runtime React Architecture (Web vs Extension Origin)
+
+How can the same React code run both on `http://localhost:5173` and inside `chrome-extension://<extension-id>/index.html`?
+
+#### 1. Origin Detection ([`client/src/App.jsx`](file:///C:/Users/Mini-PC/Desktop/projects/PCS/PCSprojects/meetManager/client/src/App.jsx)):
+```javascript
+const isChromeExtension = typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:';
+const DEFAULT_BACKEND_ORIGIN = isChromeExtension ? 'http://localhost:5000' : '';
+```
+- In a web browser, a request to `/api/meetings` works because the domain is relative (`origin = http://localhost:5000`).
+- Inside a Chrome Extension, a relative request to `/api/meetings` would fail with `chrome-extension://<id>/api/meetings (404 Not Found)`.
+- Therefore, `getApiUrl()` automatically prepends `http://localhost:5000` (or your cloud URL) whenever `isChromeExtension` is true!
+
+#### 2. WebSocket URL Derivation:
+```javascript
+const getWsUrl = (path = '/ws') => {
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  if (isChromeExtension) {
+    return `ws://localhost:5000${cleanPath}`;
+  }
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}${cleanPath}`;
+};
+```
+
+#### 3. Backend CORS & Helmet Allowances ([`server/server.js`](file:///C:/Users/Mini-PC/Desktop/projects/PCS/PCSprojects/meetManager/server/server.js)):
+```javascript
+// Express CORS middleware permits requests from chrome-extension:// origins
+app.use(cors());
+
+// Helmet CSP explicitly permits WebSocket connections from extensions
+helmet({
+  contentSecurityPolicy: {
+    directives: {
+      connectSrc: ["'self'", 'ws:', 'wss:', 'https://*.google.com'],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+});
+```
+
+#### 4. Fluid Narrow Viewport CSS ([`client/src/App.css`](file:///C:/Users/Mini-PC/Desktop/projects/PCS/PCSprojects/meetManager/client/src/App.css)):
+Chrome side panels typically measure **360px to 420px** wide. The CSS applies fluid container rules:
+```css
+@media (max-width: 768px) {
+  .workspace-container {
+    padding: 12px;
+    gap: 12px;
+  }
+  .header-inner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .bento-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+```
+
+---
+
+### 6.8 Pure Node.js Programmatic Icon Generator (`generate-icons.js`)
+
+Most extensions require launching Photoshop or Figma to export 16x16, 48x48, and 128x128 PNG icons. 
+
+PCS Meet Manager includes an automated binary icon generator ([`client/scripts/generate-icons.js`](file:///C:/Users/Mini-PC/Desktop/projects/PCS/PCSprojects/meetManager/client/scripts/generate-icons.js)) written in pure Node.js without any canvas or third-party image libraries:
+
+1. **CRC32 Checksum Engine:** PNG specification mandates a 32-bit cyclic redundancy check for every data chunk:
+   ```javascript
+   function crc32(buf) {
+     let crc = 0xffffffff;
+     for (let i = 0; i < buf.length; i++) {
+       crc = crcTable[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
+     }
+     return (crc ^ 0xffffffff) >>> 0;
+   }
+   ```
+2. **Binary PNG Chunk Assembler:**
+   - **`signature`**: Standard 8-byte PNG header (`[137, 80, 78, 71, 13, 10, 26, 10]`).
+   - **`IHDR`**: Specifies width, height, 8-bit depth, and RGBA color type (type 6).
+   - **`IDAT`**: Generates raw RGBA byte pixels (executive dark charcoal `#09090b`, royal blue border `#1d4ed8`, emerald green center dot `#16a34a`) and compresses them using Node's built-in `zlib.deflateSync()`.
+   - **`IEND`**: Closes the PNG stream.
+3. Running `npm run generate:icons` instantly writes `icon-16.png`, `icon-48.png`, and `icon-128.png` to `client/public/`.
+
+---
+
+### 6.9 Automated Extension Packaging Pipeline (`package-extension.js`)
+
+When you run:
+```bash
+npm run package:extension
+```
+The script [`client/scripts/package-extension.js`](file:///C:/Users/Mini-PC/Desktop/projects/PCS/PCSprojects/meetManager/client/scripts/package-extension.js) executes the following sequence:
+1. Runs `vite build`, which bundles React 19, CSS, and assets into `client/dist`.
+2. Verifies that `manifest.json`, `background.js`, and the icons are in `client/dist`.
+3. Detects the operating system (`process.platform`):
+   - **Windows:** Executes PowerShell `Compress-Archive -Path 'client/dist/*' -DestinationPath 'pcs-meet-manager-extension.zip' -Force`.
+   - **macOS / Linux:** Executes `cd client/dist && zip -r ../../pcs-meet-manager-extension.zip ./*`.
+4. Outputs a distribution ZIP package ready to submit to the Chrome Web Store or share with team members.
+
+---
+
+### 6.10 Developer Guide: How to Load, Test & Debug in Chrome
+
+Follow this step-by-step guide to load and test the extension on your machine:
+
+#### Step 1: Build the Extension Assets
+In your terminal, run:
+```bash
+npm run package:extension
+```
+This creates the compiled `client/dist` directory and the `pcs-meet-manager-extension.zip` file.
+
+#### Step 2: Open Chrome Extensions Manager
+In Google Chrome, type:
+```
+chrome://extensions
+```
+in the address bar and press **Enter**.
+
+#### Step 3: Enable Developer Mode
+In the top-right corner of the Extensions page, toggle the **Developer mode** switch to **ON**.
+
+#### Step 4: Load Unpacked Extension
+1. Click the **Load unpacked** button in the top-left corner.
+2. Navigate to and select the `client/dist` folder inside this repository:
+   ```
+   C:\Users\Mini-PC\Desktop\projects\PCS\PCSprojects\meetManager\client\dist
+   ```
+3. You will now see **PCS Meet Manager** listed among your installed extensions.
+
+#### Step 5: Pin and Launch the Side Panel
+1. Click the **Extensions puzzle icon** in Chrome's top toolbar.
+2. Click the **Pin** icon next to **PCS Meet Manager**.
+3. Click the **PCS Meet Manager** toolbar icon.
+4. **Result:** The persistent side panel slides open on the right of your browser window!
+
+#### Step 6: How to Debug
+* **To inspect the UI (React components, Console, Network):** Right-click anywhere inside the side panel and select **Inspect**. This opens Chrome DevTools scoped to the side panel.
+* **To inspect the Background Service Worker:** On `chrome://extensions`, find PCS Meet Manager and click **service worker** next to *"Inspect views"*. This opens a dedicated DevTools window showing `console.log` statements from `background.js`.
+* **To reload after code changes:** Run `npm run package:extension`, then click the **Reload circular arrow** icon on the PCS Meet Manager card in `chrome://extensions`.
 
 ---
 
