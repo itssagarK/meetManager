@@ -348,6 +348,100 @@ function App() {
     fetchItems(workspaceId);
   }, [workspaceId]);
 
+  // Chrome Extension Superpowers: Ingest pending clips, handle open room, and sync badge
+  useEffect(() => {
+    if (!isChromeExtension || typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+      return;
+    }
+
+    const checkExtensionStorage = async () => {
+      try {
+        const { pcs_pending_clips = [], pcs_open_room = '' } = await chrome.storage.local.get([
+          'pcs_pending_clips',
+          'pcs_open_room',
+        ]);
+
+        // 1. Omnibox / Context menu requested opening a specific room
+        if (pcs_open_room && typeof pcs_open_room === 'string' && pcs_open_room.trim() !== '') {
+          const roomToOpen = pcs_open_room.trim();
+          await chrome.storage.local.remove('pcs_open_room');
+          handleStartInstantCall(roomToOpen);
+          showToast(`Opening meeting room: ${roomToOpen}`);
+        }
+
+        // 2. Ingest clipped tasks from right-click or shortcut (Alt+Shift+C)
+        if (Array.isArray(pcs_pending_clips) && pcs_pending_clips.length > 0) {
+          const clipsToIngest = [...pcs_pending_clips];
+          await chrome.storage.local.remove('pcs_pending_clips');
+
+          for (const clip of clipsToIngest) {
+            try {
+              const res = await apiFetch(API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Workspace-Id': workspaceId },
+                body: JSON.stringify({ ...clip, workspace_id: workspaceId }),
+              });
+              if (res.ok) {
+                const saved = await res.json();
+                setItems((prev) => [...prev, saved]);
+              } else {
+                setItems((prev) => [...prev, clip]);
+              }
+            } catch (e) {
+              setItems((prev) => [...prev, clip]);
+            }
+          }
+          showToast(`Imported ${clipsToIngest.length} clipped task(s) from Chrome!`);
+        }
+      } catch (err) {
+        console.warn('Chrome extension storage check error:', err);
+      }
+    };
+
+    checkExtensionStorage();
+
+    // Listen for storage changes from background.js
+    const handleStorageChange = (changes, areaName) => {
+      if (areaName === 'local' && (changes.pcs_pending_clips || changes.pcs_open_room)) {
+        checkExtensionStorage();
+      }
+    };
+
+    if (chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener(handleStorageChange);
+    }
+
+    return () => {
+      if (chrome.storage.onChanged) {
+        chrome.storage.onChanged.removeListener(handleStorageChange);
+      }
+    };
+  }, [isChromeExtension, workspaceId]);
+
+  // Update Chrome Extension Badge Counter based on today's pending items
+  useEffect(() => {
+    if (isChromeExtension && typeof chrome !== 'undefined' && chrome.action && chrome.action.setBadgeText) {
+      const todayPending = (items || []).filter(
+        (m) => m.date === todayStr && m.status === 'Pending'
+      ).length;
+
+      chrome.action.setBadgeText({ text: todayPending > 0 ? String(todayPending) : '' });
+
+      // Check if there is an urgent meeting starting within 15 minutes
+      const nowMs = Date.now();
+      const hasUrgentMeeting = (items || []).some((m) => {
+        if (m.date === todayStr && m.time && m.status === 'Pending' && (m.type === 'meeting' || m.link)) {
+          const mTime = new Date(`${m.date}T${m.time}`).getTime();
+          const diffMin = (mTime - nowMs) / 60000;
+          return diffMin >= 0 && diffMin <= 15;
+        }
+        return false;
+      });
+
+      chrome.action.setBadgeBackgroundColor({ color: hasUrgentMeeting ? '#ef4444' : '#1d4ed8' });
+    }
+  }, [items, todayStr, isChromeExtension]);
+
   const handleSwitchWorkspace = () => {
     const entered = prompt(
       `Your current workspace ID is: ${workspaceId}\n\nEnter a Workspace ID to join, or click OK to copy current:`,
@@ -464,6 +558,57 @@ function App() {
       }
     }
     showToast('Paste the meeting link into the field');
+  };
+
+  const handleClipCurrentTab = async () => {
+    if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (activeTab && activeTab.url) {
+          const rawTitle = activeTab.title || 'Webpage Reference';
+          const cleanTitle = `Review: ${rawTitle.length > 80 ? rawTitle.substring(0, 77) + '...' : rawTitle}`;
+          const now = new Date();
+          const today = now.toISOString().split('T')[0];
+          const time = now.toTimeString().substring(0, 5);
+
+          const clippedItem = {
+            title: cleanTitle,
+            date: today,
+            time: time,
+            link: activeTab.url,
+            attendees: '',
+            notes: `Clipped from Chrome Tab:\n${rawTitle}\nURL: ${activeTab.url}`,
+            priority: 'Medium',
+            status: 'Pending',
+            type: 'task',
+            workspace_id: workspaceId,
+          };
+
+          try {
+            const res = await apiFetch(API_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Workspace-Id': workspaceId },
+              body: JSON.stringify(clippedItem),
+            });
+            if (res.ok) {
+              const saved = await res.json();
+              setItems((prev) => [...prev, saved]);
+              showToast('Clipped active tab to tasks queue!');
+              return;
+            }
+          } catch (e) {}
+
+          // Optimistic local state fallback
+          const localItem = { ...clippedItem, id: Date.now() };
+          setItems((prev) => [...prev, localItem]);
+          showToast('Clipped active tab (saved locally)');
+          return;
+        }
+      } catch (err) {
+        console.warn('Clip tab error:', err);
+      }
+    }
+    showToast('Open in Chrome to clip browser tabs');
   };
 
   // Global Keyboard Shortcuts
@@ -4389,6 +4534,18 @@ function App() {
                 </button>
               )}
             </div>
+            {isChromeExtension && (
+              <button
+                type="button"
+                className="btn-clip-tab"
+                onClick={handleClipCurrentTab}
+                title="Clip active Chrome tab as task (Alt+Shift+C)"
+              >
+                <span className="material-symbols-outlined">bookmark_add</span>
+                <span>Clip Tab</span>
+                <span className="kbd-hint">Alt+C</span>
+              </button>
+            )}
             <button
               type="button"
               className="btn-quick-join-header"

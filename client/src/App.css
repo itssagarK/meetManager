@@ -206,6 +206,40 @@ body {
   box-shadow: 1px 1px 0 var(--border-black);
 }
 
+.btn-clip-tab {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1.5px solid var(--border-black);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--border-black);
+  background: #f1f5f9;
+  color: #0f172a;
+  transition: all 0.1s ease;
+}
+
+.btn-clip-tab:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--border-black);
+  background: #e2e8f0;
+}
+
+.btn-clip-tab:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--border-black);
+}
+
+.btn-clip-tab .material-symbols-outlined {
+  font-size: 16px;
+  color: var(--color-blue);
+}
+
 /* Keyboard Shortcut Hints */
 .kbd-hint {
   display: inline-block;

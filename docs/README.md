@@ -672,33 +672,86 @@ END:VCALENDAR
 
 ---
 
-## 9. Chrome Extension Manifest V3 & Desktop Alarms
+## 9. Chrome Extension Manifest V3 Architecture (v2.0.0)
 
-### 9.1 Background Service Worker Architecture
-The extension complies with Google Chrome Manifest V3 standards:
-
-* **Persistent Side Panel:** Clicking the browser toolbar icon triggers `chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })`.
-* **Contextual Call Detection:** The "Auto-Detect Call Link" button inspects the active browser tab via `chrome.tabs.query()`. If the active tab is an active Google Meet, Zoom, or Teams call, its URL is automatically copied into the meeting link field.
+### 9.1 Overview & Manifest V3 Declaration
+PCS Meet Manager is natively distributed as a Google Chrome Manifest V3 Extension. Unlike conventional extensions that open in popups that disappear whenever a user clicks elsewhere, PCS Meet Manager mounts inside Chrome's native **Side Panel API (`chrome.sidePanel`)**, docking alongside any document, pull request, or active web application.
 
 ```mermaid
 flowchart TD
-    AppLaunch["Meeting Scheduled or Fetched in Side Panel"] --> CalculateDelta["Compute Pre-Meeting Alert Time\n(Target Start Time - 2 Minutes)"]
+    subgraph Browser["Google Chrome Environment (v2.0.0)"]
+        Toolbar["Browser Toolbar Action"] -->|"Click Icon (Alt+Shift+M)"| SidePanel["Persistent Side Panel\n(React 19 App)"]
+        Omnibox["Chrome Omnibox (pcs ...)"] -->|"pcs call <room>\npcs task <title>"| BackgroundWorker["Background Service Worker\n(background.js)"]
+        ContextMenu["Webpage Right-Click Context Menu"] -->|"Clip Selection / Clip Page"| BackgroundWorker
+        ActiveTab["Active Browser Tab"] -->|"Alt+Shift+C Shortcut"| BackgroundWorker
+    end
 
-    CalculateDelta --> RegisterAlarm["Register chrome.alarms\n(alarmName: meet-alert:Title)"]
+    subgraph ServiceWorker["Background Service Worker Tasks"]
+        BackgroundWorker -->|"Store Pending Items"| LocalStorage[("chrome.storage.local\n(pendingClips)")]
+        BackgroundWorker -->|"Set Badge (Count & Color)"| ActionBadge["chrome.action Badge\n(Urgent Red / Blue / Green)"]
+        BackgroundWorker -->|"Schedule Alarms (T - 2min)"| ChromeAlarms["chrome.alarms API"]
+        ChromeAlarms -->|"Trigger Notification"| DesktopNotif["chrome.notifications\n(Rich Desktop Banner)"]
+    end
 
-    RegisterAlarm -. "Timer Elapsed (T - 2min)" .-> BackgroundWorker["background.js onAlarm Listener"]
-
-    BackgroundWorker --> TriggerNotification["chrome.notifications.create\n(Title: Meeting Starting in 2 Minutes)"]
-
-    TriggerNotification --> UserClicks{"User Clicks Notification"}
-    UserClicks --> FocusSidePanel["chrome.sidePanel.open\n(Directs User into Meeting Room)"]
+    subgraph SyncEngine["React UI Ingestion Bridge"]
+        LocalStorage -.->|"Auto-detect & Ingest on mount/poll"| SidePanel
+        SidePanel -->|"Persist Task / Meeting"| SQLiteDB[("SQLite WAL Database\n(/api/meetings)")]
+    end
 ```
 
-### 9.2 Automated Packaging Script
-The packaging pipeline (`client/scripts/package-extension.js`) automates extension distribution:
-1. Runs `vite build` to output production assets to `client/dist`.
-2. Generates store-compliant PNG icons (`icon-16.png`, `icon-48.png`, `icon-128.png`).
-3. Compresses `client/dist` into `pcs-meet-manager-extension.zip`.
+### 9.2 Key Manifest V3 Capabilities & Permissions
+
+1. **`sidePanel` (`openPanelOnActionClick: true`):**
+   - Configured in `client/public/manifest.json` with `"default_path": "index.html"`.
+   - In `background.js`, `chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })` ensures clicking the extension icon directly mounts the workspace beside your web tabs.
+
+2. **`contextMenus`:**
+   - Adds right-click options to any page:
+     - **Clip Selection to PCS Meet Manager**: Captures highlighted text, page URL, and page title as a task.
+     - **Clip Current Page as Research Task**: Saves current URL and article title.
+     - **Open PCS Side Panel**: Direct launch shortcut.
+   - Provides immediate confirmation via `chrome.notifications.create` and flash updates on the toolbar badge.
+
+3. **`omnibox` (`keyword: "pcs"`):**
+   - Enables browser address-bar commands without opening the panel:
+     - `pcs call sprint-review`: Immediately opens or switches to the WebRTC video meeting room.
+     - `pcs task Review PR #104`: Instantly records an executive task to local storage.
+
+4. **`commands` (Global Keyboard Shortcuts):**
+   - `_execute_action` (<kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd>): Directly opens or toggles the side panel.
+   - `clip-active-tab` (<kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd>): Instant one-stroke clipping of the current webpage URL and title into your task backlog.
+
+5. **`activeTab` & `tabs`:**
+   - Inspects the active tab URL to auto-detect Google Meet, Zoom, or Teams video calls.
+   - Extracts page metadata (`tab.title`, `tab.url`) when clipping content.
+
+6. **Dynamic Toolbar Badges (`chrome.action.setBadgeText`):**
+   - **Urgent Red (`#ef4444`)**: Displays `!` or meeting time when a call starts in less than 15 minutes.
+   - **Productive Blue (`#1d4ed8`)**: Displays count of pending tasks due today (e.g. `"3"`).
+   - **Quiet Emerald (`#16a34a`)**: Displays `✓` or clears when all today's commitments are completed.
+
+7. **Desktop Alarms & Notifications (`chrome.alarms` & `chrome.notifications`):**
+   - Registers alarms $T - 2\text{ minutes}$ prior to scheduled calls.
+   - Displays a rich OS notification banner. Clicking the notification immediately focuses the browser window and opens the meeting room.
+
+### 9.3 Ingestion Pipeline (Dual-Runtime Storage Bridge)
+
+Because service workers run headless without direct access to the React DOM or API tokens, clips captured via context menus or keyboard shortcuts are written to `chrome.storage.local` under the key `pendingClips`.
+
+When the user opens the side panel:
+1. `App.jsx` polls `chrome.storage.local.get(['pendingClips'])`.
+2. Any queued clips are converted into `POST /api/meetings` payloads with priority `High` and type `task`.
+3. The pending queue in `chrome.storage.local` is atomically cleared.
+4. An interactive toast notification confirms: *"Ingested 1 clipped task from browser context menu"*.
+
+### 9.4 Automated Packaging & Distribution
+The build script (`client/scripts/package-extension.js`) automates bundling:
+```bash
+npm run package:extension
+```
+- Executes `vite build` into `client/dist`.
+- Validates and packages PNG icons (`icon-16.png`, `icon-48.png`, `icon-128.png`).
+- Generates `pcs-meet-manager-extension.zip` in the project root ready for Chrome Web Store upload or manual unpacked developer loading (`chrome://extensions` -> "Load unpacked").
 
 ---
 
@@ -725,6 +778,10 @@ flowchart LR
 
 | Shortcut | Scope | Action |
 | :--- | :--- | :--- |
+| <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> | Browser Global | Open or Toggle Chrome Side Panel (`_execute_action`) |
+| <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd> | Browser Global | Clip Active Browser Tab into Task Backlog |
+| `pcs call <room>` | Omnibox | Jump directly into WebRTC video meeting room |
+| `pcs task <title>` | Omnibox | Fast-create a new task directly from the address bar |
 | <kbd>Ctrl</kbd> + <kbd>K</kbd> / <kbd>Cmd</kbd> + <kbd>K</kbd> | Global | Open Command Palette |
 | <kbd>1</kbd> | Global | Switch to Calendar View |
 | <kbd>2</kbd> | Global | Switch to Table View |
