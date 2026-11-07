@@ -4,7 +4,7 @@ An executive productivity workspace, real-time collaboration hub, and Chrome Sid
 ---
 
 Live Demo: [https://meetmanager-p55v.onrender.com](https://meetmanager-p55v.onrender.com)  
-Full Architecture & Technical Documentation: [docs/README.md](docs/README.md) • [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md)
+Full Architecture & Technical Documentation: [docs/README.md](docs/README.md) • [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md) • [Developer Study Guide](docs/STUDY_GUIDE.md)
 
 ---
 

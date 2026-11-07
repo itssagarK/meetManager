@@ -13,7 +13,7 @@
 [![Signaling](https://img.shields.io/badge/Realtime-WebSockets%20(ws)-010101.svg)](https://github.com/websockets/ws)
 [![Calling](https://img.shields.io/badge/Video-WebRTC%20Mesh%20%2B%20Web%20Audio-FF6F00.svg)](https://webrtc.org/)
 
-**[🌐 Live Production Demo](https://meetmanager-p55v.onrender.com)** • **[🚀 Quickstart Guide](#15-installation-local-development--deployment-guide)** • **[📊 API Reference](#11-complete-rest-api-specification-reference)** • **[🔌 WebSocket Events](#12-complete-websocket-event-protocol-specification-ws)**
+**[🌐 Live Production Demo](https://meetmanager-p55v.onrender.com)** • **[🎓 Beginner's Study Guide](docs/STUDY_GUIDE.md)** • **[🚀 Quickstart Guide](#15-installation-local-development--deployment-guide)** • **[📊 API Reference](#11-complete-rest-api-specification-reference)** • **[🔌 WebSocket Events](#12-complete-websocket-event-protocol-specification-ws)**
 
 </div>
 
