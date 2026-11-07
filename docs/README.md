@@ -24,7 +24,7 @@
 1. [Executive Summary & Problem Statement](#1-executive-summary--problem-statement)
 2. [Visual Interface Gallery](#2-visual-interface-gallery)
 3. [High-Level Architecture & System Flowchart](#3-high-level-architecture--system-flowchart)
-4. [Database Architecture & Entity-Relationship (ER) Diagram](#4-database-architecture--entity-relationship-er-diagram)
+4. [End-to-End System Working Analysis & Entity-Relationship (ER) Architecture](#4-end-to-end-system-working-analysis--entity-relationship-er-architecture)
 5. [WebRTC Multi-Peer Mesh Calling Engine](#5-webrtc-multi-peer-mesh-calling-engine)
 6. [Corporate Knocking Lobby & Gatekeeping Handshake](#6-corporate-knocking-lobby--gatekeeping-handshake)
 7. [Global Real-Time Chat & Asset Collaboration](#7-global-real-time-chat--asset-collaboration)
@@ -169,16 +169,58 @@ flowchart TD
 
 ---
 
-## 4. Database Architecture & Entity-Relationship (ER) Diagram
+## 4. End-to-End System Working Analysis & Entity-Relationship (ER) Architecture
 
-### 4.1 Persistence Philosophy
-The database architecture uses an embedded **SQLite 3** engine configured with **Write-Ahead Logging (WAL)**:
+### 4.1 In-Depth Subsystem Working Analysis
+To understand how data flows and how entities interact across PCS Meet Manager, the system can be decomposed into seven tightly integrated operational subsystems:
 
-* **WAL Mode Activated:** `db.pragma('journal_mode = WAL');` allows reading transactions to proceed concurrently without blocking writes.
-* **Prepared Statements:** All database queries utilize pre-compiled parameterized statements, preventing SQL injection vulnerabilities.
-* **Configurable Location:** Supports the `DATABASE_PATH` environment variable, enabling direct persistence to Docker volumes or persistent cloud mount points (e.g., `/data/meetings.db`).
+#### 1. Multi-Tenant Workspace Partitioning Engine
+* **Isolation Scope:** Every schedule record and meeting item belongs to a specific tenant workspace, tracked by `workspace_id`.
+* **Runtime Resolution:** The client detects or initializes a persistent workspace ID in `localStorage` (`mm_workspace_id`) and attaches it to all outbound HTTP requests via the `x-workspace-id` header.
+* **Database Isolation:** SQLite queries strictly scope mutations and reads (`WHERE workspace_id = ?`), preventing data leaks between distinct client sessions, teams, or testing environments.
 
-### 4.2 Entity-Relationship (ER) Diagram
+#### 2. Unified Schedule & Action Items Engine
+* **Single-Table Design:** Rather than maintaining disparate tables for calendar events and to-do items, the `meetings` table unifies both concepts using the `type` column discriminator (`'meeting'` vs `'task'`).
+* **Intelligent Auto-Classification:** If a user submits a quick entry without explicitly setting a type, the server inspects the payload: if a video conference link or email attendees are provided, the system auto-promotes the item to a `'meeting'`, otherwise categorizing it as a `'task'`.
+* **Productivity Lifecycle Automations:**
+  - **24-Hour Standup Digest:** Aggregates all completed tasks from the preceding 24 hours, alongside today's agenda, outputting formatted Markdown for Slack/Teams.
+  - **25-Minute Pomodoro Focus Intervals:** State machine tracking 25-minute sprint timers with pause/resume and notification chimes.
+  - **Morning Overdue Triage:** Flags items where `date < todayStr` and `status == 'Pending'`, exposing a single-click "Roll All to Today" bulk update.
+  - **Notes-to-Tasks Conversion:** Regex scanner parsing Markdown checklists (`- [ ]`) inside meeting agendas, spawning discrete child task records.
+
+#### 3. WebRTC Decentralized P2P Mesh Video Calling Subsystem
+* **Mesh Network Topology:** Avoids expensive central media servers (SFU/MCU). For a room with $N$ participants, $N \times (N-1) / 2$ direct encrypted DTLS-SRTP peer connections are formed.
+* **Deterministic Signaling Protocol:** Operates over WebSockets (`/ws`). When a new peer enters, the server transmits `room-users`. The new peer acts as the offering initiator (`isInitiator = true`) to existing members, while existing peers receive `peer-joined` and wait for offers, guaranteeing zero signaling glare.
+* **Client-Side Web Audio Active Speaker Halo:** Eliminates server CPU load by attaching `AnalyserNode` (`fftSize = 256`) instances to each incoming `MediaStream`. If average amplitude exceeds threshold ($> 18$), the peer ID is added to `speakingPeers`, rendering a glowing green aura around their video tile.
+* **Adaptive Video Stages:** Dynamic CSS Grid calculations adjust the canvas between 1-tile focus, 50/50 splits, $2 \times 2$, $3 \times 3$, or spotlight filmstrips with docked Picture-in-Picture (PiP) multitasking.
+
+#### 4. Corporate Knocking Lobby & Gatekeeping Handshake
+* **Zero-Friction Guest Access:** External attendees access rooms via public links (`?room=<code>`). No sign-up or credentials are required.
+* **Two-Phase Security Handshake:**
+  1. The guest submits their Full Name and Corporate Office ID (`guest-knock`).
+  2. The server records the guest in `room.waitingGuests` and dispatches `guest-knock-request` to the active host socket with a doorbell chime.
+  3. The host can either admit, deny, or bulk-admit all waiting guests.
+  4. Admitted sockets transition to `room.participants`, emitting `peer-joined` to start WebRTC ICE negotiation.
+
+#### 5. Real-Time Global & In-Call Collaboration Chat
+* **Channel & Room Partitioning:** Operates across persistent channels (`general`, `standup`) and transient in-call video rooms.
+* **Optimistic Local Delivery & Idempotency:** The client creates a local UUID `client_msg_id` and renders the message in $0\text{ ms}$. If network reconnects cause retries, SQLite's indexed `client_msg_id` guarantees that duplicate inserts are rejected and existing records are safely reconciled.
+* **Rich Messaging:** Threaded quote replies (`reply_to_id`, `reply_to_sender`), Base64 image pasting/dropping with full-resolution lightbox viewer, live typing indicators, and soft message deletion (`is_deleted = 1`).
+* **Synthesized Audio Notifications:** Incoming messages trigger dual-tone sine-wave chimes (800 Hz / 1000 Hz) created with the browser Web Audio API, avoiding external audio file dependencies.
+
+#### 6. Automated RFC 5545 Calendar Email Pipeline
+* **Asynchronous Execution:** When `POST /api/meetings` registers a meeting with attendee emails, the HTTP 201 response returns immediately to ensure snappy UI interaction.
+* **Background MIME Construction:** Background worker parses attendee emails using regex, formats an RFC 5545 `.ics` calendar payload with `METHOD:REQUEST`, generates a responsive HTML email with a direct join link, and delivers it via Nodemailer SMTP.
+
+#### 7. Chrome Extension Manifest V3 & Desktop Alarms
+* **Persistent Docking:** Uses `chrome.sidePanel` to run in a continuous 400px vertical sidebar beside browser tabs.
+* **Pre-Meeting Desktop Alerts:** Evaluates scheduled meetings and registers `chrome.alarms` for $T - 2\text{ minutes}$. When fired, `background.js` triggers a high-priority system notification. Clicking the alert opens the side panel directly into the video room.
+* **Contextual Tab Detection:** Queries `chrome.tabs.query()` to detect active Google Meet, Zoom, or Teams tabs, pulling meeting links directly into the scheduling form.
+
+---
+
+### 4.2 Physical SQLite Database ER Diagram
+This diagram represents the physical relational schema persisted in SQLite via `better-sqlite3` in Write-Ahead Logging (`WAL`) mode.
 
 ```mermaid
 erDiagram
@@ -205,7 +247,7 @@ erDiagram
         TEXT content "Message text body"
         TEXT attachment_url "Base64 image URI or asset link"
         TEXT attachment_type "Content classification: text | image"
-        TEXT client_msg_id "UUID generated by client for deduplication"
+        TEXT client_msg_id "UUID generated by client for deduplication (Indexed)"
         INTEGER reply_to_id FK "Self-referencing parent message ID"
         TEXT reply_to_sender "Parent sender name for quote banner"
         TEXT reply_to_content "Parent message excerpt"
@@ -216,9 +258,154 @@ erDiagram
     ROOM_MESSAGES ||--o{ ROOM_MESSAGES : "replies to (reply_to_id)"
 ```
 
-### 4.3 Database Schema Specifications
+---
 
-#### Table: `meetings`
+### 4.3 Full-System Conceptual & Logical Domain ER Diagram
+This diagram models the entire domain architecture of PCS Meet Manager. It bridges physical database records, in-memory WebSocket signaling states, WebRTC peer topology, knocking lobby queues, email automation, and Chrome Extension alarms.
+
+```mermaid
+erDiagram
+    WORKSPACE ||--o{ MEETING : "partitions"
+    WORKSPACE ||--o{ ROOM_MESSAGE : "partitions"
+    MEETING ||--o{ ATTENDEE : "invites"
+    MEETING ||--o| CALENDAR_INVITATION : "dispatches"
+    MEETING ||--o| CHROME_ALARM : "schedules"
+    MEETING ||--o| CONFERENCE_ROOM : "activates"
+    CONFERENCE_ROOM ||--o| HOST_SESSION : "governed by"
+    CONFERENCE_ROOM ||--o{ WAITING_GUEST : "queues"
+    CONFERENCE_ROOM ||--o{ PEER_PARTICIPANT : "connects"
+    PEER_PARTICIPANT ||--o{ P2P_CONNECTION : "establishes"
+    CONFERENCE_ROOM ||--o{ ROOM_MESSAGE : "logs"
+    ROOM_MESSAGE ||--o{ ROOM_MESSAGE : "threaded replies"
+    ROOM_MESSAGE ||--o| MEDIA_ATTACHMENT : "contains"
+
+    WORKSPACE {
+        string id PK "Unique workspace identifier"
+        string name "Workspace display title"
+        string mode "Web runtime or Chrome Side Panel"
+    }
+
+    MEETING {
+        int id PK "Autoincrement primary key"
+        string title "Meeting title or task description"
+        string date "Target date (YYYY-MM-DD)"
+        string time "Target time in 24h format (HH:MM)"
+        string link "Call URL or room code"
+        string attendees "Comma-separated email list"
+        string notes "Markdown notes or agendas"
+        string priority "High, Medium, or Low"
+        string status "Pending or Completed"
+        string type "meeting or task discriminator"
+        string workspace_id FK "Tenant partition foreign key"
+        datetime created_at "Timestamp of record creation"
+    }
+
+    ATTENDEE {
+        string email PK "Normalized email address"
+        int meeting_id FK "Foreign key to meeting record"
+        string status "Invited or RSVP pending"
+    }
+
+    CALENDAR_INVITATION {
+        string uid PK "RFC 5545 Unique Identifier"
+        int meeting_id FK "Associated meeting ID"
+        string method "MIME method: REQUEST"
+        string ics_content "Raw VEVENT calendar payload"
+        string dispatch_status "Dispatched or Skipped"
+    }
+
+    CHROME_ALARM {
+        string alarm_name PK "Prefix meet-alert:Title"
+        int meeting_id FK "Associated meeting ID"
+        datetime scheduled_for "T minus 2 minutes trigger"
+        boolean notified "Notification fired flag"
+    }
+
+    CONFERENCE_ROOM {
+        string room_id PK "Unique room namespace"
+        string status "Active or Idle state"
+        int peer_count "Connected mesh peers count"
+        int queue_length "Knocking lobby queue count"
+    }
+
+    HOST_SESSION {
+        string host_peer_id PK "Host participant peer ID"
+        string room_id FK "Governed conference room"
+        boolean is_online "Host WebSocket active status"
+    }
+
+    WAITING_GUEST {
+        string guest_id PK "Surrogate guest session UUID"
+        string room_id FK "Target conference room"
+        string guest_name "Full name provided by guest"
+        string office_id "Corporate office identifier"
+        string status "pending, admitted, or denied"
+        datetime timestamp "Knock submission timestamp"
+    }
+
+    PEER_PARTICIPANT {
+        string peer_id PK "WebRTC peer identifier"
+        string room_id FK "Active conference room"
+        string name "User display name"
+        boolean is_host "Host moderation role"
+        boolean is_audio_muted "Microphone mute state"
+        boolean is_video_off "Camera disable state"
+        boolean is_hand_raised "Raised hand indicator"
+        boolean is_speaking "Web Audio halo active"
+    }
+
+    P2P_CONNECTION {
+        string connection_id PK "Initiator to receiver pair"
+        string initiator_id FK "Offering peer ID"
+        string receiver_id FK "Answering peer ID"
+        string ice_state "new, checking, or connected"
+        string media_types "audio, video, or screen"
+    }
+
+    ROOM_MESSAGE {
+        int id PK "Autoincrement primary key"
+        string room_id FK "Target channel or room code"
+        string sender_name "Author display name"
+        string sender_id "User or peer session ID"
+        string content "Message text content"
+        string client_msg_id "Client UUID for idempotency"
+        int reply_to_id FK "Self-referencing parent ID"
+        int is_deleted "Soft delete flag: 0 or 1"
+        datetime created_at "Creation timestamp"
+    }
+
+    MEDIA_ATTACHMENT {
+        string attachment_id PK "Generated asset hash"
+        int message_id FK "Associated message primary key"
+        string attachment_type "text or image classification"
+        string base64_url "Base64 data URI payload"
+    }
+```
+
+---
+
+### 4.4 Comprehensive Entity Dictionary & Attribute Catalog
+
+| Entity Name | Domain Scope | Storage Layer | Primary Key | Description & Cardinality |
+| :--- | :--- | :--- | :--- | :--- |
+| **`WORKSPACE`** | Tenancy | Client / Header | `id` (string) | Tenant boundary that scopes all tasks, meetings, and channels. One workspace contains many meetings and messages ($1:N$). |
+| **`MEETING`** | Schedule | SQLite (`meetings`) | `id` (int autoincrement) | Core scheduling record. Can represent a collaborative video meeting or a discrete task depending on the `type` column. |
+| **`ATTENDEE`** | Collaboration | Parsed / In-Memory | `email` (string) | Recipient parsed from `MEETING.attendees`. Receives automated email invites and RFC 5545 calendar files. |
+| **`CALENDAR_INVITATION`**| Notification | SMTP Transport | `uid` (string) | Generated MIME iCalendar entity (`METHOD:REQUEST`) attached to invitation emails for one-click calendar import. |
+| **`CHROME_ALARM`** | Extension | Chrome Storage API | `alarm_name` (string) | Pre-meeting desktop alarm registered $T - 2\text{ minutes}$ prior to call time via Chrome Manifest V3 Alarms API. |
+| **`CONFERENCE_ROOM`** | Real-Time | Node.js Memory Map | `room_id` (string) | Real-time conference namespace. Manages host sockets, active mesh participants, and knocking lobby queues. |
+| **`HOST_SESSION`** | Moderation | Node.js Memory Map | `host_peer_id` (string) | Active WebSocket connection holding host privileges; receives knock notifications and admits/denies guests. |
+| **`WAITING_GUEST`** | Security | Node.js Memory Map | `guest_id` (string) | Queued attendee in the Corporate Knocking Lobby awaiting host approval with Full Name and Corporate Office ID. |
+| **`PEER_PARTICIPANT`** | Media | Browser WebRTC | `peer_id` (string) | Connected video call member maintaining audio/video tracks, mute toggles, and Web Audio speaker halo state. |
+| **`P2P_CONNECTION`** | WebRTC | Browser WebRTC | `connection_id` (string)| Direct DTLS-SRTP encrypted peer-to-peer connection between two calling nodes ($N \times (N-1) / 2$ mesh). |
+| **`ROOM_MESSAGE`** | Chat | SQLite (`room_messages`) | `id` (int autoincrement) | Persistent channel message with client UUID idempotency, threaded quoted replies, and soft delete capabilities. |
+| **`MEDIA_ATTACHMENT`** | Collaboration | SQLite / Lightbox | `attachment_id` (string)| Base64 data URI image payload pasted or dragged into chat, viewable in a full-screen interactive lightbox. |
+
+---
+
+### 4.5 Schema DDL, Constraints & Indexing Strategy
+
+#### 1. Table: `meetings`
 Stores scheduled meetings, operational tasks, and sprint goals partitioned by workspace.
 
 ```sql
@@ -238,7 +425,7 @@ CREATE TABLE IF NOT EXISTS meetings (
 );
 ```
 
-#### Table: `room_messages`
+#### 2. Table: `room_messages`
 Stores channel and in-call chat histories, threaded replies, and image assets.
 
 ```sql
@@ -264,6 +451,18 @@ CREATE INDEX IF NOT EXISTS idx_room_messages_client_id ON room_messages(client_m
 
 > [!TIP]
 > **Idempotent Messaging:** The index on `client_msg_id` allows the server to detect and reject accidental duplicate submissions caused by network retries.
+
+---
+
+### 4.6 Server In-Memory State Models
+Real-time WebRTC signaling and guest lobby queues are maintained in decoupled in-memory Maps on the Node.js server:
+
+* `rooms`: `Map<roomId, RoomState>`
+  - `hostSocket`: WebSocket connection of the registered meeting host.
+  - `hostPeerId`: Peer ID string of the active room host.
+  - `participants`: `Map<peerId, { ws, peerId, name, officeId, isHost, isAudioMuted, isVideoOff, isHandRaised }>`
+  - `waitingGuests`: `Map<guestId, { id, name, officeId, ws, timestamp }>`
+* `chatRooms`: `Map<roomId, Set<WebSocket>>`: Sockets subscribed to real-time chat broadcasts, presence updates, and typing notifications.
 
 ---
 
