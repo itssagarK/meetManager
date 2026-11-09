@@ -270,6 +270,8 @@ function App() {
   const peerAudioAnalysersRef = useRef(new Map()); // peerId -> AnalyserNode
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const remoteStreamRef = useRef(null);
   const wsSignalingRef = useRef(null);
   const statsIntervalRef = useRef(null);
 
@@ -2447,7 +2449,6 @@ function App() {
   useEffect(() => {
     if (!activeCallRoom) {
       setIsLocalSpeaking(false);
-      setIsRemoteSpeaking(false);
       setSpeakingPeers(new Set());
       return;
     }
@@ -2503,7 +2504,6 @@ function App() {
             anyRemote = true;
           }
         });
-        setIsRemoteSpeaking(anyRemote);
         setSpeakingPeers((prev) => {
           if (prev.size !== activeSpeaking.size) return activeSpeaking;
           for (const id of activeSpeaking) {
@@ -2610,8 +2610,11 @@ function App() {
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((track) => track.stop());
       }
-      if (peerConnectionRef.current) {
-        peerConnectionRef.current.close();
+      if (peerConnectionsRef.current) {
+        peerConnectionsRef.current.forEach((pc) => {
+          try { pc.close(); } catch (e) {}
+        });
+        peerConnectionsRef.current.clear();
       }
       if (wsSignalingRef.current) {
         wsSignalingRef.current.close();

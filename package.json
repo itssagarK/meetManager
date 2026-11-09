@@ -4,6 +4,7 @@
   "private": true,
   "description": "PCS Meet Manager - Schedule meetings, track agendas, and organize action items.",
   "scripts": {
+    "dev": "node scripts/dev.mjs",
     "start": "node server/server.js",
     "server": "cd server && npm start",
     "client": "cd client && npm run dev",
