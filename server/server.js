@@ -9,6 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +42,54 @@ app.use(
 
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
+
+// Dedicated uploads directory for disk-based asset storage (prevents SQLite bloating)
+const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Serve uploaded chat assets statically with client caching and security headers
+app.use(
+  '/uploads',
+  express.static(uploadDir, {
+    maxAge: '7d',
+    setHeaders: (res) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    },
+  })
+);
+
+function saveBase64ImageToDisk(dataUri) {
+  if (!dataUri || typeof dataUri !== 'string' || !dataUri.startsWith('data:')) {
+    return dataUri;
+  }
+  try {
+    const match = dataUri.match(/^data:([a-zA-Z0-9\/+-]+);base64,(.+)$/);
+    if (!match) return dataUri;
+    const mimeType = match[1].toLowerCase();
+    const base64Data = match[2];
+
+    const extMap = {
+      'image/png': 'png',
+      'image/jpeg': 'jpg',
+      'image/jpg': 'jpg',
+      'image/webp': 'webp',
+      'image/gif': 'gif',
+      'image/svg+xml': 'svg',
+      'application/pdf': 'pdf',
+    };
+    const ext = extMap[mimeType] || 'png';
+    const filename = `asset-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`;
+    const filePath = path.join(uploadDir, filename);
+
+    fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+    return `/uploads/${filename}`;
+  } catch (err) {
+    console.error('Failed to save base64 asset to disk:', err);
+    return dataUri;
+  }
+}
 
 // Rate Limiting: 200 requests per 15 minutes per IP for general API
 const apiLimiter = rateLimit({
@@ -166,6 +215,11 @@ function saveRoomMessage(targetRoom, chatMsg) {
     }
   }
 
+  let attachmentUrl = chatMsg.attachmentUrl || chatMsg.attachment_url || null;
+  if (attachmentUrl && attachmentUrl.startsWith('data:')) {
+    attachmentUrl = saveBase64ImageToDisk(attachmentUrl);
+  }
+
   const stmt = db.prepare(`
     INSERT INTO room_messages (
       room_id, sender_name, sender_id, content, attachment_url, attachment_type, client_msg_id, reply_to_id, reply_to_sender, reply_to_content, is_deleted
@@ -177,7 +231,7 @@ function saveRoomMessage(targetRoom, chatMsg) {
     (chatMsg.senderName || chatMsg.sender_name || 'Anonymous').trim(),
     chatMsg.senderId || chatMsg.sender_id || 'user',
     chatMsg.content || '',
-    chatMsg.attachmentUrl || chatMsg.attachment_url || null,
+    attachmentUrl,
     chatMsg.attachmentType || chatMsg.attachment_type || 'text',
     clientMsgId,
     chatMsg.replyToId || chatMsg.reply_to_id || null,
@@ -198,6 +252,178 @@ try {
 } catch (e) {
   console.error('Townhall date cleanup error:', e);
 }
+
+// Storage Migration: Extract any existing Base64 images from SQLite to disk and update URLs
+try {
+  const legacyRows = db.prepare(`
+    SELECT id, attachment_url FROM room_messages 
+    WHERE attachment_url LIKE 'data:%'
+  `).all();
+  
+  if (legacyRows && legacyRows.length > 0) {
+    console.log(`[Storage Migration] Found ${legacyRows.length} legacy base64 image(s) in SQLite. Migrating to disk...`);
+    const updateStmt = db.prepare('UPDATE room_messages SET attachment_url = ? WHERE id = ?');
+    
+    db.transaction((rows) => {
+      for (const row of rows) {
+        const diskUrl = saveBase64ImageToDisk(row.attachment_url);
+        if (diskUrl && diskUrl !== row.attachment_url) {
+          updateStmt.run(diskUrl, row.id);
+        }
+      }
+    })(legacyRows);
+    
+    console.log(`[Storage Migration] Completed migration. Vacuuming SQLite database...`);
+    try { db.exec('VACUUM'); } catch (e) {}
+  }
+} catch (e) {
+  console.error('Storage migration notice:', e);
+}
+
+// Media Upload Endpoint: Saves base64 images directly to disk storage
+app.post('/api/upload', (req, res) => {
+  try {
+    const { dataUrl, filename: origName, attachmentType } = req.body;
+    if (!dataUrl) {
+      return res.status(400).json({ error: 'No dataUrl provided' });
+    }
+    const savedUrl = saveBase64ImageToDisk(dataUrl);
+    const basename = path.basename(savedUrl);
+    let fileSize = 0;
+    try {
+      fileSize = fs.statSync(path.join(uploadDir, basename)).size;
+    } catch (e) {}
+    
+    return res.json({
+      url: savedUrl,
+      name: origName || basename,
+      size: fileSize,
+      type: attachmentType || 'image',
+    });
+  } catch (err) {
+    console.error('Upload endpoint error:', err);
+    return res.status(500).json({ error: 'File upload failed' });
+  }
+});
+
+// Database 1-Click Backup Export Endpoint
+app.get('/api/backup', (req, res) => {
+  try {
+    const workspaceId = req.headers['x-workspace-id'] || 'default';
+    const exportAll = req.query.all === 'true';
+
+    const meetings = exportAll
+      ? db.prepare('SELECT * FROM meetings ORDER BY id ASC').all()
+      : db.prepare('SELECT * FROM meetings WHERE workspace_id = ? ORDER BY id ASC').all(workspaceId);
+
+    const messages = db.prepare('SELECT * FROM room_messages ORDER BY id ASC').all();
+
+    const backupPayload = {
+      format: 'pcs-meet-manager-backup',
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      workspaceId: exportAll ? 'all' : workspaceId,
+      counts: {
+        meetings: meetings.length,
+        messages: messages.length,
+      },
+      data: {
+        meetings,
+        room_messages: messages,
+      },
+    };
+
+    const filename = `pcs-meet-manager-backup-${new Date().toISOString().split('T')[0]}.json`;
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(JSON.stringify(backupPayload, null, 2));
+  } catch (err) {
+    console.error('Database backup error:', err);
+    return res.status(500).json({ error: 'Failed to generate backup' });
+  }
+});
+
+// Database 1-Click Restore Endpoint
+app.post('/api/restore', (req, res) => {
+  try {
+    const backup = req.body;
+    if (!backup || !backup.data || (!backup.data.meetings && !backup.data.room_messages)) {
+      return res.status(400).json({ error: 'Invalid backup file structure' });
+    }
+
+    const mode = req.query.mode || 'merge'; // 'merge' or 'replace'
+
+    const restoreTransaction = db.transaction(() => {
+      if (mode === 'replace') {
+        db.exec('DELETE FROM meetings');
+        db.exec('DELETE FROM room_messages');
+      }
+
+      let meetingsRestored = 0;
+      if (Array.isArray(backup.data.meetings)) {
+        const insertMeeting = db.prepare(`
+          INSERT OR REPLACE INTO meetings (id, title, date, time, link, attendees, notes, priority, status, type, workspace_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const m of backup.data.meetings) {
+          insertMeeting.run(
+            m.id || null,
+            m.title || 'Untitled',
+            m.date || new Date().toISOString().split('T')[0],
+            m.time || '10:00 AM',
+            m.link || '',
+            m.attendees || '',
+            m.notes || '',
+            m.priority || 'Medium',
+            m.status || 'Pending',
+            m.type || 'task',
+            m.workspace_id || 'default',
+            m.created_at || new Date().toISOString()
+          );
+          meetingsRestored++;
+        }
+      }
+
+      let messagesRestored = 0;
+      if (Array.isArray(backup.data.room_messages)) {
+        const insertMsg = db.prepare(`
+          INSERT OR REPLACE INTO room_messages (id, room_id, sender_name, sender_id, content, attachment_url, attachment_type, client_msg_id, reply_to_id, reply_to_sender, reply_to_content, is_deleted, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const msg of backup.data.room_messages) {
+          insertMsg.run(
+            msg.id || null,
+            msg.room_id || 'general',
+            msg.sender_name || 'Anonymous',
+            msg.sender_id || 'user',
+            msg.content || '',
+            msg.attachment_url || null,
+            msg.attachment_type || 'text',
+            msg.client_msg_id || null,
+            msg.reply_to_id || null,
+            msg.reply_to_sender || null,
+            msg.reply_to_content || null,
+            msg.is_deleted || 0,
+            msg.created_at || new Date().toISOString()
+          );
+          messagesRestored++;
+        }
+      }
+
+      return { meetingsRestored, messagesRestored };
+    });
+
+    const results = restoreTransaction();
+    return res.json({
+      success: true,
+      mode,
+      ...results,
+    });
+  } catch (err) {
+    console.error('Database restore error:', err);
+    return res.status(500).json({ error: 'Failed to restore database from backup' });
+  }
+});
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

@@ -261,6 +261,7 @@ function App() {
   const lastTypingSentRef = useRef(0);
   const chatMessagesEndRef = useRef(null);
   const chatFileInputRef = useRef(null);
+  const restoreFileInputRef = useRef(null);
   const chatWsRef = useRef(null);
 
   const localVideoRef = useRef(null);
@@ -2494,14 +2495,12 @@ function App() {
         }
 
         const activeSpeaking = new Set();
-        let anyRemote = false;
         remoteAnalysers.forEach((analyser, peerId) => {
           const arr = new Uint8Array(analyser.frequencyBinCount);
           analyser.getByteFrequencyData(arr);
           const avg = arr.reduce((acc, v) => acc + v, 0) / arr.length;
           if (avg > 18) {
             activeSpeaking.add(peerId);
-            anyRemote = true;
           }
         });
         setSpeakingPeers((prev) => {
@@ -2661,6 +2660,69 @@ function App() {
       showToast('Daily standup copied to clipboard');
     } else {
       prompt('Copy your standup:', text);
+    }
+  };
+
+  // 1-Click Database Backup Export
+  const handleDownloadBackup = async (exportAll = false) => {
+    try {
+      showToast('Generating database backup...');
+      const url = getApiUrl(`/api/backup${exportAll ? '?all=true' : ''}`);
+      const res = await apiFetch(url, { headers: { 'X-Workspace-Id': workspaceId } });
+      if (!res.ok) throw new Error('Backup request failed');
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `pcs-meet-manager-backup-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+      showToast('Database backup downloaded successfully!');
+    } catch (err) {
+      console.error('Backup error:', err);
+      showToast('Failed to download database backup');
+    }
+  };
+
+  // 1-Click Database Restore
+  const handleRestoreBackup = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    const confirmed = window.confirm(
+      `Are you sure you want to restore from "${file.name}"?\n\nThis will merge meetings, tasks, and chat messages into your database.`
+    );
+    if (!confirmed) {
+      e.target.value = '';
+      return;
+    }
+
+    try {
+      showToast('Restoring database from backup...');
+      const fileText = await file.text();
+      const backupData = JSON.parse(fileText);
+
+      const res = await apiFetch(getApiUrl('/api/restore?mode=merge'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(backupData),
+      });
+
+      if (!res.ok) throw new Error('Restore request failed');
+      const result = await res.json();
+
+      await fetchItems(workspaceId);
+      const currentRoom = (isGlobalChatMode ? activeChatRoom : (activeCallRoom || activeChatRoom || 'general')).trim().toLowerCase();
+      handleLoadRoomMessages(currentRoom);
+
+      showToast(`Restored ${result.meetingsRestored || 0} items & ${result.messagesRestored || 0} messages!`);
+    } catch (err) {
+      console.error('Restore error:', err);
+      showToast(`Restore failed: ${err.message}`);
+    } finally {
+      e.target.value = '';
     }
   };
 
@@ -2942,6 +3004,8 @@ function App() {
     { id: 'cmd-standup', title: 'Copy Daily Standup (Slack/Teams)', icon: 'content_paste', action: () => { handleCopyDailyStandup(); setIsPaletteOpen(false); } },
     { id: 'cmd-sprint', title: isSprintActive ? 'Stop Focus Sprint' : 'Start Focus Sprint (25m)', icon: 'timer', action: () => { if (isSprintActive) handleStopFocusSprint(); else handleStartFocusSprint(25); setIsPaletteOpen(false); } },
     { id: 'cmd-call', title: 'Start Instant PCS Meet Call (WebRTC)', icon: 'videocam', action: () => { handleStartInstantCall(); setIsPaletteOpen(false); } },
+    { id: 'cmd-backup', title: 'Export Database Backup (JSON)', icon: 'cloud_download', action: () => { handleDownloadBackup(); setIsPaletteOpen(false); } },
+    { id: 'cmd-restore', title: 'Restore Database from Backup (JSON)', icon: 'cloud_upload', action: () => { restoreFileInputRef.current?.click(); setIsPaletteOpen(false); } },
     { id: 'cmd-workspace', title: 'Switch / Share Workspace ID', icon: 'folder_shared', action: () => { handleSwitchWorkspace(); setIsPaletteOpen(false); } },
   ];
 
@@ -4698,6 +4762,33 @@ function App() {
               <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>folder_shared</span>
               <span>{workspaceId}</span>
             </button>
+            <div className="strip-divider"></div>
+            <button
+              type="button"
+              className="utility-strip-btn"
+              onClick={() => handleDownloadBackup(false)}
+              title="Export complete SQLite database backup (Meetings, Tasks & Messages)"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>cloud_download</span>
+              <span>Backup</span>
+            </button>
+            <div className="strip-divider"></div>
+            <button
+              type="button"
+              className="utility-strip-btn"
+              onClick={() => restoreFileInputRef.current?.click()}
+              title="Restore database from an exported backup JSON file"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>cloud_upload</span>
+              <span>Restore</span>
+            </button>
+            <input
+              type="file"
+              ref={restoreFileInputRef}
+              accept=".json"
+              style={{ display: 'none' }}
+              onChange={handleRestoreBackup}
+            />
             <div className="strip-divider"></div>
             <div className="utility-strip-status" title={serverOnline ? 'Connected to local backend' : 'Operating in local offline cache mode'}>
               <span className="pulse-dot"></span>

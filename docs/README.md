@@ -811,8 +811,11 @@ All endpoints are served from `/api` and consume/return `application/json`.
 | `GET` | `/api/public/live-meetings` | Standard | None | `200` | Public directory of today's meetings with live participant counts. |
 | `GET` | `/api/public/room-status` | Standard | `?room=code` | `200` | Checks if a room has an active host and returns queue length. |
 | `GET` | `/api/rooms/:roomId/messages` | Standard | None | `200` | Returns historical chat log (up to 300 messages) for the room. |
-| `POST` | `/api/rooms/:roomId/messages` | Standard | `{ senderName, senderId, content, attachmentUrl, clientMsgId, replyToId }` | `201` | Saves a chat message to SQLite and broadcasts to the room. |
+| `POST` | `/api/rooms/:roomId/messages` | Standard | `{ senderName, senderId, content, attachmentUrl, clientMsgId, replyToId }` | `201` | Saves a chat message to SQLite, auto-migrates base64 to disk, and broadcasts. |
 | `DELETE` | `/api/rooms/:roomId/messages/:id`| Standard | None | `200` | Soft-deletes a message (`is_deleted = 1`) and broadcasts removal. |
+| `POST` | `/api/upload` | Standard | `{ dataUrl, filename, attachmentType }` | `200` | Saves base64 chat image to disk (`server/uploads/`) and returns clean static asset URL. |
+| `GET` | `/api/backup` | Standard | `x-workspace-id: string`, `?all=true` | `200` | Generates complete JSON database export of meetings, tasks, and room messages. |
+| `POST` | `/api/restore` | Strict | `?mode=merge\|replace`, `{ data: { meetings, room_messages } }` | `200` | Safely restores/merges database state within an atomic SQLite transaction. |
 
 ---
 
