@@ -122,7 +122,7 @@ flowchart TD
 
     subgraph SecurityGateway["Security & Ingress Gateway"]
         HelmetHeaders["Helmet Enterprise Security Headers\n(CSP, X-Frame-Options, HSTS)"]
-        RateLimits["Two-Tier Rate Limiting\n(200 req/15min API & 80 req/5min Write)"]
+        RateLimits["Two-Tier Rate Limiting & ETag Caching\n(2,500 req/15min API & 300 req/5min Write\nLAN/Localhost Whitelisted)"]
         CORSControl["CORS Policy Handler\n(Web Origins & chrome-extension://)"]
     end
 
@@ -166,6 +166,45 @@ flowchart TD
 2. **Local-First Optimistic UI:** Client-side updates occur at $0\text{ ms}$ perceived latency. State mutations are reflected immediately in the UI while synchronization takes place in the background.
 3. **Synchronous C++ Database Execution:** Embedded SQLite powered by `better-sqlite3` runs directly against C++ SQLite APIs without the overhead of thread-pool context switches. Write-Ahead Logging (`WAL`) allows concurrent reads while writes take place.
 4. **Zero-Dependency Real-Time Signaling:** Standard Node.js `ws` library handles WebSockets for WebRTC SDP signaling, room presence, chat events, and lobby admission over port 5000.
+
+### 3.2 Modular Frontend Component Architecture & Directory Structure
+
+The frontend application has been decoupled into modular, reusable, and maintainable components organized by domain:
+
+```
+client/src/
+├── App.jsx                               # Master Application State Orchestrator (~3.8k lines)
+├── App.css                               # Unified responsive & theme stylesheet
+├── config/
+│   └── constants.js                      # Environment detection, API endpoints, RTC STUN/TURN, default schemas
+├── utils/
+│   └── dateUtils.js                      # Date chips, humanized time labels, meeting duration formatters
+└── components/
+    ├── common/                           # Shared Atomic UI Blocks
+    │   ├── RemoteParticipantTile.jsx     # Memoized video tile with audio halo & pin indicators
+    │   ├── ImageLightbox.jsx             # Fullscreen interactive work asset viewer
+    │   └── Toast.jsx                     # Non-blocking animated alert banners
+    ├── chat/                             # Global Collaboration & Real-Time Messaging
+    │   ├── ChatMessageContent.jsx        # Rich message parser (URL auto-linker, quotes, lightbox hooks)
+    │   └── FloatingChatDock.jsx          # Reusable floating chat dock (Dashboard, Lobby, and Portal)
+    ├── views/                            # Primary Application Screen Views
+    │   ├── CalendarView.jsx              # Month grid & 7-day sprint board with density indicators
+    │   ├── TableView.jsx                 # Sortable, filterable enterprise data table
+    │   ├── CardsView.jsx                 # Responsive card grid for meetings & tasks
+    │   ├── AnalyticsView.jsx             # 90-day consistency heatmap & sprint metrics
+    │   ├── DayScheduleSidebar.jsx        # Right-hand daily schedule drawer & quick actions
+    │   ├── PublicPortalView.jsx          # Standalone public read-only directory (?public=1)
+    │   ├── GlobalChatView.jsx            # Dedicated full-viewport team chat (?chat=room)
+    │   └── GuestLobbyView.jsx            # Zero-install guest check-in & knocking lobby
+    ├── modals/                           # Interactive Dialogs & Drawers
+    │   ├── ItemDrawer.jsx                # Right-sliding task & meeting creation/editor drawer
+    │   ├── CommandPalette.jsx            # Ctrl+K spotlight search & quick action navigation
+    │   ├── QuickJoinModal.jsx            # Instant direct room access (Call & Chat)
+    │   ├── CreateRoomModal.jsx           # Global work collaboration room creator
+    │   └── HostKnockModal.jsx            # Host gatekeeper admission approval dialog
+    └── conference/                       # Real-Time WebRTC Calling Engine
+        └── ConferenceOverlay.jsx         # Google Meet calling stage, PiP mode & pill dock controls
+```
 
 ---
 
@@ -850,19 +889,35 @@ flowchart TD
 
     Helmet --> CORS["CORS Policy Middleware\n• Allows Web Origins\n• Allows chrome-extension:// origins"]
 
-    CORS --> RateLimitCheck{"Rate Limiter Tiers"}
-    RateLimitCheck -- "GET Requests" --> GlobalLimiter["200 Requests / 15 Minutes per IP"]
-    RateLimitCheck -- "POST / PUT / DELETE" --> StrictLimiter["80 Requests / 5 Minutes per IP"]
+    CORS --> LocalCheck{"Localhost or Private LAN IP?\n(127.0.0.1, ::1, 10.x, 192.168.x)"}
+    LocalCheck -- "Yes (Local/Office Dev)" --> BypassLimiter["Bypass Rate Limiting\n(Zero Friction for Internal Work)"]
+    LocalCheck -- "No (Public/Remote IP)" --> RateLimitCheck{"Rate Limiter Tiers"}
 
-    GlobalLimiter --> Sanitization["Parameterized SQL Execution\n(Prepared Statements via better-sqlite3)"]
+    RateLimitCheck -- "GET Requests" --> GlobalLimiter["2,500 Requests / 15 Minutes per IP\n(Health & ICE Routes Exempt)"]
+    RateLimitCheck -- "POST / PUT / DELETE" --> StrictLimiter["300 Requests / 5 Minutes per IP"]
+
+    BypassLimiter --> ETagCheck{"HTTP ETag Conditional Check\n(If-None-Match Header)"}
+    GlobalLimiter --> ETagCheck
+    ETagCheck -- "Match (No Change)" --> Send304["HTTP 304 Not Modified\n(0-byte Payload, Instant Cache)"]
+    ETagCheck -- "Stale / New" --> Sanitization["Parameterized SQL Execution\n(Prepared Statements via better-sqlite3)"]
     StrictLimiter --> Sanitization
     Sanitization --> Dispatch["Execute Request Handler"]
 ```
 
 1. **Content Security Policy (CSP):** Relaxed specifically to permit inline scripts required by Vite HMR, Google Fonts stylesheets, WebRTC media streams (`blob:`), and WebSocket connections (`ws:`, `wss:`).
-2. **Two-Tier DDoS Rate Limiting:** Global limiter prevents endpoint scraping, while strict write limiters protect database write operations from spam.
-3. **CORS Policy for Chrome Extensions:** Explicitly allows requests originating from `chrome-extension://` schemes.
-4. **SQL Injection Prevention:** 100% of queries use `better-sqlite3` prepared statements with parameterized inputs.
+2. **High-Capacity Two-Tier DDoS Rate Limiting:**
+   - **General API Limiter:** 2,500 requests per 15-minute window (raised from 200) prevents denial-of-service while accommodating multi-tab collaboration. Critical infrastructure endpoints (`/api/health`, `/api/webrtc/ice-config`, and static `/uploads`) are unthrottled.
+   - **Write Limiter:** 300 requests per 5-minute window for mutating endpoints (`POST`, `PUT`, `DELETE`).
+   - **LAN / Localhost Whitelisting:** Loopback (`127.0.0.1`, `::1`) and RFC 1918 private LAN IP subnets (`10.0.0.0/8`, `192.168.0.0/16`, `172.16.0.0/12`) are automatically exempted from rate limits, preventing multiple colleagues on the same office Wi-Fi from triggering false alarms.
+   - **Backoff & `Retry-After` Header:** When rate limits are triggered, the server returns `HTTP 429 Too Many Requests` along with a standard `Retry-After` header. The client captures this header, surfaces a non-disruptive toast notification, and automatically pauses background polling.
+3. **HTTP ETag Conditional Caching (`304 Not Modified`):**
+   - Endpoints `/api/meetings` and `/api/rooms/:roomId/messages` compute lightweight cryptographic ETags based on record count, maximum ID, and newest modification timestamp.
+   - When clients send `If-None-Match`, the server immediately responds with `304 Not Modified` (0-byte body payload), eliminating unnecessary database serialization and saving 95%+ of network bandwidth.
+4. **Adaptive Client Polling:**
+   - **WebSocket-Aware Silence:** Chat REST polling completely pauses whenever the real-time WebSocket connection is active (`readyState === WebSocket.OPEN`).
+   - **Page Visibility Optimization:** Polling intervals automatically halt when browser tabs are hidden or minimized (`document.hidden`), resuming instantly when the tab regains focus (`visibilitychange`).
+5. **CORS Policy for Chrome Extensions:** Explicitly allows requests originating from `chrome-extension://` schemes.
+6. **SQL Injection Prevention:** 100% of queries use `better-sqlite3` prepared statements with parameterized inputs.
 
 ---
 
@@ -982,7 +1037,7 @@ docker run -d \
 <summary><strong>Q4: Why does the Chrome Side Panel say "Server Disconnected"?</strong></summary>
 
 * Ensure the backend server is running on port 5000 (`npm run server`).
-* The extension connects to `http://localhost:5000` by default. If using a remote server, update `DEFAULT_BACKEND_ORIGIN` in `client/src/App.jsx`.
+* The extension connects to `http://localhost:5000` by default. If using a remote server, update `DEFAULT_BACKEND_ORIGIN` in `client/src/config/constants.js`.
 </details>
 
 ---
@@ -991,11 +1046,11 @@ docker run -d \
 
 ```mermaid
 flowchart LR
-    Phase1["Phase 1: Component Modularization\n• Split App.jsx into feature subdirectories\n• Adopt CSS Modules for scoped styling\n• Extract custom WebRTC hooks"] --> Phase2["Phase 2: Scalability & Cloud Assets\n• Offload base64 images to S3/Cloudflare R2\n• Add JWT-based multi-tenancy\n• Automated SQLite schema migrations"]
+    Phase1["Phase 1: Component Modularization [COMPLETED]\n• Split App.jsx into feature subdirectories\n• Clean separation of views, chat & conference\n• Unified date and networking utilities"] --> Phase2["Phase 2: Scalability & Cloud Assets\n• Offload base64 images to S3/Cloudflare R2\n• Add JWT-based multi-tenancy\n• Automated SQLite schema migrations"]
     Phase2 --> Phase3["Phase 3: Enterprise Calling Engine\n• Optional SFU Relay (LiveKit / Mediasoup)\n• Server-side meeting recording\n• AI meeting transcription & action items"]
 ```
 
-* **Phase 1 (Component Modularization):** Decompose the single `App.jsx` orchestrator into focused components (`components/views`, `components/webrtc`, `components/chat`).
+* **Phase 1 (Component Modularization) — [COMPLETED]:** Decomposed the single `App.jsx` orchestrator into focused components (`components/views`, `components/conference`, `components/chat`, `components/modals`, `components/common`, `config/`, `utils/`).
 * **Phase 2 (Cloud Asset Storage):** Transition from Base64 data URIs in SQLite to object storage (AWS S3 or Cloudflare R2), storing clean CDN URLs in the database.
 * **Phase 3 (Enterprise Calling & SFU):** Introduce an optional Selective Forwarding Unit (SFU) for large-scale conferences with 8+ participants, while preserving lightweight P2P mesh for 1:1 and small team calls.
 

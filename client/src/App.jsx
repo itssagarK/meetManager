@@ -1,137 +1,32 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
-
-const isChromeExtension = typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:';
-const DEFAULT_BACKEND_ORIGIN = isChromeExtension ? 'http://localhost:5000' : '';
-
-const getApiUrl = (endpoint) => {
-  if (!endpoint) return '';
-  if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) return endpoint;
-  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  return `${DEFAULT_BACKEND_ORIGIN}${cleanEndpoint}`;
-};
-
-const getWsUrl = (path = '/ws') => {
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  if (isChromeExtension) {
-    return `ws://localhost:5000${cleanPath}`;
-  }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}${cleanPath}`;
-};
-
-const getPublicWebOrigin = () => {
-  if (isChromeExtension) {
-    return 'http://localhost:5000';
-  }
-  return window.location.origin;
-};
-
-const API_URL = getApiUrl('/api/meetings');
-
-const RTC_CONFIG = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    { urls: 'stun:stun.services.mozilla.com' },
-  ],
-};
-
-const initialFormData = {
-  title: '',
-  date: new Date().toISOString().split('T')[0],
-  time: '10:00 AM',
-  priority: 'High',
-  status: 'Pending',
-  notes: '',
-  link: '',
-  attendees: '',
-  sendEmailInvites: true,
-};
-
-const priorityOrder = { High: 1, Medium: 2, Low: 3 };
-
-// Individual Remote Participant Video Tile for Multi-User WebRTC Meetings
-const RemoteParticipantTile = React.memo(({
-  peer,
-  isSpeaking,
-  isPinned,
-  onPin,
-}) => {
-  const videoRef = useRef(null);
-
-  useEffect(() => {
-    if (videoRef.current) {
-      if (peer.stream) {
-        if (videoRef.current.srcObject !== peer.stream) {
-          videoRef.current.srcObject = peer.stream;
-        }
-        videoRef.current.play().catch(() => {});
-      } else {
-        videoRef.current.srcObject = null;
-      }
-    }
-  }, [peer.stream]);
-
-  const initials = (peer.name || 'P').charAt(0).toUpperCase();
-
-  return (
-    <div
-      className={`meet-video-tile remote-tile ${isSpeaking ? 'speaking' : ''} ${isPinned ? 'is-pinned-hero' : ''}`}
-    >
-      {peer.isVideoOff || !peer.stream ? (
-        <div className="meet-avatar-placeholder">
-          <div className={`meet-avatar-circle remote-avatar-circle ${isSpeaking ? 'pulse-speaking' : ''}`}>
-            <span>{initials}</span>
-          </div>
-          <div className="meet-avatar-label">
-            {peer.isVideoOff ? 'Camera is off' : 'Connecting stream...'}
-          </div>
-        </div>
-      ) : (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          className="meet-video-element remote-stream"
-        />
-      )}
-
-      {/* Participant Bottom Pill */}
-      <div className="meet-name-pill">
-        <span className={`mic-badge ${peer.isAudioMuted ? 'muted' : ''}`}>
-          <span className="material-symbols-outlined">
-            {peer.isAudioMuted ? 'mic_off' : 'mic'}
-          </span>
-        </span>
-        <span className="participant-title">
-          {peer.name || 'Participant'} {peer.isHost ? '(Host)' : ''}
-        </span>
-        {peer.isHandRaised && (
-          <span className="raised-hand-badge">
-            <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>
-            <span>Hand raised</span>
-          </span>
-        )}
-      </div>
-
-      {/* Pin button */}
-      <button
-        type="button"
-        className="meet-tile-pin-btn"
-        onClick={onPin}
-        title={isPinned ? 'Unpin' : 'Pin to main view'}
-      >
-        <span className="material-symbols-outlined">
-          {isPinned ? 'keep_off' : 'push_pin'}
-        </span>
-      </button>
-    </div>
-  );
-});
+import {
+  isChromeExtension,
+  getApiUrl,
+  getWsUrl,
+  getPublicWebOrigin,
+  API_URL,
+  RTC_CONFIG,
+  initialFormData,
+  priorityOrder,
+} from './config/constants.js';
+import ImageLightbox from './components/common/ImageLightbox.jsx';
+import Toast from './components/common/Toast.jsx';
+import FloatingChatDock from './components/chat/FloatingChatDock.jsx';
+import PublicPortalView from './components/views/PublicPortalView.jsx';
+import GlobalChatView from './components/views/GlobalChatView.jsx';
+import GuestLobbyView from './components/views/GuestLobbyView.jsx';
+import CalendarView from './components/views/CalendarView.jsx';
+import TableView from './components/views/TableView.jsx';
+import CardsView from './components/views/CardsView.jsx';
+import AnalyticsView from './components/views/AnalyticsView.jsx';
+import DayScheduleSidebar from './components/views/DayScheduleSidebar.jsx';
+import CommandPalette from './components/modals/CommandPalette.jsx';
+import ItemDrawer from './components/modals/ItemDrawer.jsx';
+import QuickJoinModal from './components/modals/QuickJoinModal.jsx';
+import CreateRoomModal from './components/modals/CreateRoomModal.jsx';
+import HostKnockModal from './components/modals/HostKnockModal.jsx';
+import ConferenceOverlay from './components/conference/ConferenceOverlay.jsx';
 
 function App() {
   // Multi-Tenant Workspace State
@@ -319,12 +214,19 @@ function App() {
   };
 
   // Scoped API Fetch Helper ensuring workspace isolation
-  const apiFetch = (url, options = {}) => {
+  const apiFetch = async (url, options = {}) => {
     const headers = {
       ...(options.headers || {}),
       'X-Workspace-Id': workspaceId,
     };
-    return fetch(getApiUrl(url), { ...options, headers });
+    const res = await fetch(getApiUrl(url), { ...options, headers });
+    if (res.status === 429) {
+      const retryAfter = res.headers.get('Retry-After');
+      const waitMsg = retryAfter ? ` Please retry in ${retryAfter}s.` : ' Please wait a moment.';
+      console.warn(`API Rate Limit reached (429).${waitMsg}`);
+      showToast(`Rate limit reached.${waitMsg}`);
+    }
+    return res;
   };
 
   const fetchItems = async (wsId = workspaceId) => {
@@ -925,17 +827,6 @@ function App() {
   const formatSprintTimer = (seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  };
-
-  const formatMeetingDuration = (totalSeconds) => {
-    const mins = Math.floor(totalSeconds / 60);
-    const secs = totalSeconds % 60;
-    const hrs = Math.floor(mins / 60);
-    const remMins = mins % 60;
-    if (hrs > 0) {
-      return `${String(hrs).padStart(2, '0')}:${String(remMins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-    }
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
@@ -1790,14 +1681,32 @@ function App() {
   useEffect(() => {
     if (!isPublicPortal) return;
     fetchPublicMeetings();
-    const interval = setInterval(fetchPublicMeetings, 5000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      fetchPublicMeetings();
+    }, 20000);
+
+    const handleVisibility = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        fetchPublicMeetings();
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibility);
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibility);
+      }
+    };
   }, [isPublicPortal]);
 
   // Global Online Work Chat & Image Sharing Handlers
   const handleLoadRoomMessages = (roomId) => {
     if (!roomId) return;
-    fetch(getApiUrl(`/api/rooms/${roomId}/messages`))
+    fetch(getApiUrl(`/api/rooms/${encodeURIComponent(roomId)}/messages`))
       .then((res) => (res.ok ? res.json() : []))
       .then((msgs) => setChatMessages(msgs || []))
       .catch((err) => console.warn('Could not load messages:', err));
@@ -1995,80 +1904,6 @@ function App() {
     }
   };
 
-  const renderMessageContent = (msg) => {
-    if (msg.is_deleted) {
-      return (
-        <div className="message-content-wrapper is-deleted">
-          <p className="message-deleted-text">
-            <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>block</span>
-            <span>This message was deleted</span>
-          </p>
-        </div>
-      );
-    }
-
-    const text = msg.content || '';
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const parts = text.split(urlRegex);
-
-    return (
-      <div className="message-content-wrapper">
-        {msg.reply_to_content && (
-          <div
-            className="chat-reply-quote"
-            onClick={() => {
-              if (msg.reply_to_id) {
-                const el = document.getElementById('chat-msg-' + msg.reply_to_id);
-                if (el) {
-                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  el.classList.add('highlight-flash');
-                  setTimeout(() => el.classList.remove('highlight-flash'), 1600);
-                }
-              }
-            }}
-            title="Click to jump to quoted message"
-          >
-            <div className="quote-sender">{msg.reply_to_sender || 'Colleague'}</div>
-            <div className="quote-text">{msg.reply_to_content}</div>
-          </div>
-        )}
-
-        {text && (
-          <p className="message-text">
-            {parts.map((part, i) => {
-              if (part.match(urlRegex)) {
-                return (
-                  <a
-                    key={i}
-                    href={part}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="chat-link"
-                  >
-                    {part}
-                  </a>
-                );
-              }
-              return part;
-            })}
-          </p>
-        )}
-
-        {msg.attachment_url && (
-          <div className="chat-image-attachment">
-            <img
-              src={msg.attachment_url}
-              alt="Shared work asset"
-              onClick={() => setActiveImageLightbox(msg.attachment_url)}
-              loading="lazy"
-            />
-            <span className="attachment-click-hint">Click to enlarge</span>
-          </div>
-        )}
-      </div>
-    );
-  };
-
   const playChatNotificationSound = () => {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -2086,33 +1921,6 @@ function App() {
       osc.start();
       osc.stop(ctx.currentTime + 0.22);
     } catch (e) {}
-  };
-
-  const getChatDayLabel = (dateStr) => {
-    if (!dateStr) return '';
-    const date = new Date(dateStr);
-    if (isNaN(date.getTime())) return '';
-    const now = new Date();
-    const isToday = date.toDateString() === now.toDateString();
-    if (isToday) return 'Today';
-    const yesterday = new Date(now);
-    yesterday.setDate(now.getDate() - 1);
-    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
-    return date.toLocaleDateString(undefined, {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
-    });
-  };
-
-  const shouldShowDateSeparator = (currTime, prevTime) => {
-    if (!currTime) return false;
-    if (!prevTime) return true;
-    const d1 = new Date(currTime);
-    const d2 = new Date(prevTime);
-    if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return false;
-    return d1.toDateString() !== d2.toDateString();
   };
 
   const handleChatInputChange = (val) => {
@@ -2376,6 +2184,11 @@ function App() {
   useEffect(() => {
     const currentRoom = (isGlobalChatMode ? activeChatRoom : (activeCallRoom || activeChatRoom || 'general')).trim().toLowerCase();
     const syncInterval = setInterval(() => {
+      // Skip polling if tab is hidden in background
+      if (typeof document !== 'undefined' && document.hidden) return;
+      // Skip REST polling if real-time WebSocket is actively connected
+      if (chatWsRef.current && chatWsRef.current.readyState === WebSocket.OPEN) return;
+
       fetch(getApiUrl(`/api/rooms/${encodeURIComponent(currentRoom)}/messages`))
         .then((res) => (res.ok ? res.json() : []))
         .then((latest) => {
@@ -2402,9 +2215,24 @@ function App() {
           }
         })
         .catch(() => {});
-    }, 3000);
+    }, 10000);
 
-    return () => clearInterval(syncInterval);
+    // Trigger immediate message sync when user returns to visible tab
+    const handleVisibility = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        handleLoadRoomMessages(currentRoom);
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibility);
+    }
+
+    return () => {
+      clearInterval(syncInterval);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibility);
+      }
+    };
   }, [isGlobalChatMode, activeChatRoom, activeCallRoom]);
 
   // Load chat messages whenever activeCallRoom changes
@@ -2585,15 +2413,36 @@ function App() {
     const urlParams = new URLSearchParams(window.location.search);
     const roomParam = (urlParams.get('room') || activeCallRoom || '').trim().toLowerCase();
     if (!isGuestMode || guestKnockStatus === 'admitted' || !roomParam) return;
-    const interval = setInterval(() => {
-      fetch(getApiUrl(`/api/public/room-status?room=${roomParam}`))
+
+    const checkStatus = () => {
+      fetch(getApiUrl(`/api/public/room-status?room=${encodeURIComponent(roomParam)}`))
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (data) setIsHostOnlineInRoom(Boolean(data.isLive));
         })
         .catch(() => {});
-    }, 4000);
-    return () => clearInterval(interval);
+    };
+
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      checkStatus();
+    }, 10000);
+
+    const handleVisibility = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        checkStatus();
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibility);
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibility);
+      }
+    };
   }, [isGuestMode, guestKnockStatus, activeCallRoom]);
 
   // Cleanup WebRTC resources on unmount
@@ -3065,402 +2914,48 @@ function App() {
 
   // Public Meeting Portal View (?public=1 or ?portal=1)
   if (isPublicPortal) {
+    const portalRoom = (activeCallRoom || activeChatRoom || 'general').trim().toLowerCase();
     return (
-      <div className="public-portal-wrapper">
-        <header className="public-portal-header">
-          <div className="public-header-inner">
-            <div className="brand-group">
-              <span className="brand-logo-badge">PCS</span>
-              <div>
-                <h2 className="brand-title">Executive Meeting Portal</h2>
-                <span className="portal-sub">Public Live Directory & Direct Admission</span>
-              </div>
-            </div>
-            <div className="portal-header-actions">
-              <span className="portal-clock">
-                {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </span>
-              <button
-                type="button"
-                className="btn-switch-workspace"
-                onClick={() => {
-                  setIsPublicPortal(false);
-                  handleConnectGlobalChat('general');
-                }}
-                title="Open Global Online Work Chat"
-              >
-                <span className="material-symbols-outlined">forum</span>
-                <span>Work Chat</span>
-              </button>
-              <button
-                type="button"
-                className="btn-switch-workspace"
-                onClick={() => {
-                  setIsPublicPortal(false);
-                  window.history.replaceState({}, document.title, window.location.pathname);
-                }}
-              >
-                <span className="material-symbols-outlined">dashboard</span>
-                <span>Workspace Dashboard</span>
-              </button>
-            </div>
-          </div>
-        </header>
-
-        <main className="public-portal-stage">
-          <div className="public-portal-hero">
-            <div className="portal-hero-title-row">
-              <span className="material-symbols-outlined portal-hero-icon">live_tv</span>
-              <div>
-                <h1>Live Meeting Directory</h1>
-                <p>Verify live host status and join directly with your Full Name and Office ID.</p>
-              </div>
-            </div>
-
-            <div className="public-room-code-form">
-              <div className="room-input-group">
-                <span className="material-symbols-outlined">key</span>
-                <input
-                  type="text"
-                  placeholder="Enter Room Code (e.g. general, standup, pcs-alpha)..."
-                  value={publicDirectRoomInput}
-                  onChange={(e) => setPublicDirectRoomInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleDirectRoomCodeSubmit(e);
-                    }
-                  }}
-                />
-              </div>
-              <div className="public-portal-buttons">
-                <button
-                  type="button"
-                  className="btn-direct-join"
-                  onClick={handleDirectRoomCodeSubmit}
-                  disabled={!publicDirectRoomInput.trim()}
-                  title="Direct Instant Video Call (No Wait)"
-                >
-                  <span className="material-symbols-outlined">videocam</span>
-                  <span>Join Call</span>
-                </button>
-                <button
-                  type="button"
-                  className="btn-direct-chat-join"
-                  onClick={() => {
-                    const clean = publicDirectRoomInput.trim().replace(/^\?chat=/, '').replace(/^\?room=/, '');
-                    if (clean) handleConnectGlobalChat(clean);
-                  }}
-                  disabled={!publicDirectRoomInput.trim()}
-                  title="Direct Real-Time Chat & Sharing"
-                >
-                  <span className="material-symbols-outlined">forum</span>
-                  <span>Join Chat</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="public-meetings-grid">
-            <div className="public-grid-header">
-              <h3>Today's Meetings</h3>
-              <span className="public-grid-counter">{publicMeetings.length} Scheduled</span>
-            </div>
-
-            {isPublicLoading && publicMeetings.length === 0 ? (
-              <div className="portal-empty-state">
-                <span className="material-symbols-outlined spin">refresh</span>
-                <p>Loading live meeting schedule...</p>
-              </div>
-            ) : publicMeetings.length === 0 ? (
-              <div className="portal-empty-state">
-                <span className="material-symbols-outlined">event_available</span>
-                <p>No public meetings scheduled for today.</p>
-                <button
-                  type="button"
-                  className="btn-create-instant-public"
-                  onClick={() => {
-                    const newRoom = `pcs-${Math.random().toString(36).substring(2, 9)}`;
-                    handleDirectJoinFromPortal(newRoom);
-                  }}
-                >
-                  <span className="material-symbols-outlined">add</span>
-                  <span>Start a New Instant Meeting</span>
-                </button>
-              </div>
-            ) : (
-              <div className="public-cards-list">
-                {publicMeetings.map((m) => (
-                  <div key={m.id} className={`public-meeting-card ${m.isLive ? 'is-live-card' : ''}`}>
-                    <div className="public-card-meta">
-                      {m.isLive ? (
-                        <div className="meeting-live-badge is-on">
-                          <span className="live-pulse-dot"></span>
-                          <span>MEETING IS ON</span>
-                        </div>
-                      ) : (
-                        <div className="meeting-live-badge scheduled">
-                          <span className="scheduled-dot"></span>
-                          <span>SCHEDULED</span>
-                        </div>
-                      )}
-                      <span className="public-meeting-time">
-                        <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>schedule</span>
-                        <span>{m.time}</span>
-                      </span>
-                    </div>
-
-                    <h4 className="public-meeting-title">{m.title}</h4>
-
-                    <div className="public-card-footer">
-                      <span className="public-room-code">Room: {m.roomId}</span>
-                      <button
-                        type="button"
-                        className={`btn-join-public-meeting ${m.isLive ? 'primary' : ''}`}
-                        onClick={() => handleDirectJoinFromPortal(m.roomId)}
-                      >
-                        <span className="material-symbols-outlined">videocam</span>
-                        <span>Join Directly</span>
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </main>
-
-        {/* Floating Room Chat in Guest View */}
-        {isRoomChatOpen && currentRoom && (
-          <div className="room-chat-floating-dock guest-chat-dock">
-            <div className="room-chat-header">
-              <div className="room-chat-title-group">
-                <span className="live-chat-dot"></span>
-                <span className="room-chat-name">Room: <strong>{currentRoom}</strong></span>
-                <span className="room-chat-count">{chatMessages.length} msgs</span>
-              </div>
-              <div className="room-chat-header-actions">
-                <button
-                  type="button"
-                  className="chat-hdr-btn"
-                  onClick={() => handleCopyRoomShareLink(currentRoom)}
-                  title="Copy Room Link"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>link</span>
-                  <span>Copy Link</span>
-                </button>
-                <button
-                  type="button"
-                  className="chat-hdr-btn close-chat-btn"
-                  onClick={() => setIsRoomChatOpen(false)}
-                  title="Close Chat"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="room-chat-messages-scroll">
-              {chatMessages.length === 0 ? (
-                <div className="chat-empty-slate">
-                  <span className="material-symbols-outlined chat-empty-icon">forum</span>
-                  <p>Welcome to <strong>{currentRoom}</strong></p>
-                  <span>Start the conversation. Share notes, links, or drop images from your device.</span>
-                  <button
-                    type="button"
-                    className="btn-copy-room-first"
-                    onClick={() => handleCopyRoomShareLink(currentRoom)}
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>content_copy</span>
-                    <span>Copy Room Code</span>
-                  </button>
-                </div>
-              ) : (
-                chatMessages.map((m, idx) => {
-                  const isSelf = m.sender_name === (guestName.trim() || 'Colleague');
-                  const timeStr = m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-                  const domId = `chat-msg-${m.id || m.client_msg_id || idx}`;
-                  return (
-                    <div
-                      key={m.id || m.client_msg_id || idx}
-                      id={domId}
-                      className={`chat-bubble-row ${isSelf ? 'self' : 'peer'} ${m.is_deleted ? 'msg-is-deleted' : ''}`}
-                    >
-                      <div className="chat-bubble">
-                        <div className="chat-bubble-meta">
-                          <span className="chat-sender-name">{m.sender_name}</span>
-                          <div className="chat-meta-right">
-                            <span className="chat-timestamp">{timeStr}</span>
-                            {isSelf && !m.is_deleted && (
-                              <span className="chat-read-receipt" title="Delivered">
-                                <span className="material-symbols-outlined receipt-icon">done_all</span>
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="chat-bubble-content">
-                          {renderMessageContent(m)}
-                        </div>
-                        {!m.is_deleted && (
-                          <div className="chat-bubble-actions">
-                            <button
-                              type="button"
-                              className="btn-bubble-action"
-                              onClick={() => handleReplyChatMessage(m)}
-                              title="Reply to message"
-                            >
-                              <span className="material-symbols-outlined">reply</span>
-                            </button>
-                            {m.content && (
-                              <button
-                                type="button"
-                                className="btn-bubble-action"
-                                onClick={() => handleCopyMessageText(m)}
-                                title="Copy message text"
-                              >
-                                <span className="material-symbols-outlined">content_copy</span>
-                              </button>
-                            )}
-                            {isSelf && (
-                              <button
-                                type="button"
-                                className="btn-bubble-action btn-bubble-action-delete"
-                                onClick={() => handleDeleteChatMessage(m.id)}
-                                title="Delete for everyone"
-                              >
-                                <span className="material-symbols-outlined">delete</span>
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-              <div ref={chatMessagesEndRef} />
-            </div>
-
-            <div className="room-chat-composer">
-              {replyingTo && (
-                <div className="chat-reply-preview-bar">
-                  <div className="reply-preview-content">
-                    <div className="reply-preview-sender">
-                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>reply</span>
-                      <span>Replying to <strong>{replyingTo.sender}</strong></span>
-                    </div>
-                    <div className="reply-preview-text">{replyingTo.content}</div>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-cancel-reply"
-                    onClick={() => setReplyingTo(null)}
-                    title="Cancel reply"
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
-                  </button>
-                </div>
-              )}
-
-              {chatAttachment && (
-                <div className="chat-attachment-preview">
-                  <img src={chatAttachment.url} alt="Attachment Preview" className="preview-thumb" />
-                  <span className="preview-filename">{chatAttachment.name}</span>
-                  <button
-                    type="button"
-                    className="btn-remove-attachment"
-                    onClick={() => setChatAttachment(null)}
-                    title="Remove attachment"
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
-                  </button>
-                </div>
-              )}
-
-              <div className="chat-composer-input-row">
-                <input
-                  type="file"
-                  ref={chatFileInputRef}
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={handleImageSelect}
-                />
-                <button
-                  type="button"
-                  className="btn-attach-image"
-                  onClick={() => chatFileInputRef.current?.click()}
-                  title="Attach photo or image"
-                >
-                  <span className="material-symbols-outlined">image</span>
-                </button>
-                <textarea
-                  className="chat-text-input"
-                  placeholder="Type message, paste image, or drop work link..."
-                  rows="1"
-                  value={chatInputText}
-                  onChange={(e) => setChatInputText(e.target.value)}
-                  onPaste={handlePasteEvent}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendChatMessage();
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn-chat-send"
-                  onClick={handleSendChatMessage}
-                  disabled={!chatInputText.trim() && !chatAttachment}
-                  title="Send Message"
-                >
-                  <span className="material-symbols-outlined">send</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Image Lightbox Fullscreen Viewer for Guest View */}
-        {activeImageLightbox && (
-          <div className="image-lightbox-overlay" onClick={() => setActiveImageLightbox(null)}>
-            <div className="image-lightbox-content" onClick={(e) => e.stopPropagation()}>
-              <div className="lightbox-header">
-                <span>Shared Work Image</span>
-                <div className="lightbox-actions">
-                  <a
-                    href={activeImageLightbox}
-                    download="shared-work-image.png"
-                    className="lightbox-download-btn"
-                    title="Download Image"
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>download</span>
-                    <span>Save</span>
-                  </a>
-                  <button
-                    type="button"
-                    className="lightbox-close-btn"
-                    onClick={() => setActiveImageLightbox(null)}
-                    title="Close Viewer"
-                  >
-                    <span className="material-symbols-outlined">close</span>
-                  </button>
-                </div>
-              </div>
-              <div className="lightbox-img-frame">
-                <img src={activeImageLightbox} alt="Full resolution shared work asset" />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {toastMessage && (
-          <div className="toast-notice">
-            <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
-            <span>{toastMessage}</span>
-          </div>
-        )}
-      </div>
+      <PublicPortalView
+        currentTime={currentTime}
+        onOpenGeneralChat={(room = 'general') => {
+          setIsPublicPortal(false);
+          handleConnectGlobalChat(room);
+        }}
+        onOpenDashboard={() => {
+          setIsPublicPortal(false);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }}
+        publicDirectRoomInput={publicDirectRoomInput}
+        setPublicDirectRoomInput={setPublicDirectRoomInput}
+        onDirectRoomSubmit={handleDirectRoomCodeSubmit}
+        publicMeetings={publicMeetings}
+        isPublicLoading={isPublicLoading}
+        onDirectJoinMeeting={handleDirectJoinFromPortal}
+        isRoomChatOpen={isRoomChatOpen}
+        setIsRoomChatOpen={setIsRoomChatOpen}
+        currentRoom={portalRoom}
+        chatMessages={chatMessages}
+        guestName={guestName}
+        onCopyRoomShareLink={handleCopyRoomShareLink}
+        chatInputText={chatInputText}
+        setChatInputText={setChatInputText}
+        chatAttachment={chatAttachment}
+        setChatAttachment={setChatAttachment}
+        chatFileInputRef={chatFileInputRef}
+        handleImageSelect={handleImageSelect}
+        handlePasteEvent={handlePasteEvent}
+        handleSendChatMessage={handleSendChatMessage}
+        chatMessagesEndRef={chatMessagesEndRef}
+        replyingTo={replyingTo}
+        setReplyingTo={setReplyingTo}
+        handleReplyChatMessage={handleReplyChatMessage}
+        handleCopyMessageText={handleCopyMessageText}
+        handleDeleteChatMessage={handleDeleteChatMessage}
+        activeImageLightbox={activeImageLightbox}
+        setActiveImageLightbox={setActiveImageLightbox}
+        toastMessage={toastMessage}
+      />
     );
   }
 
@@ -3468,465 +2963,50 @@ function App() {
   if (isGlobalChatMode) {
     const currentChat = activeChatRoom || 'general';
     return (
-      <div className="global-chat-page-wrapper">
-        <header className="global-chat-header">
-          <div className="global-chat-header-inner">
-            <div className="brand-group">
-              <span className="brand-logo-badge">PCS</span>
-              <div>
-                <div className="chat-title-row">
-                  <h2 className="brand-title">Global Work Chat</h2>
-                  <span className="chat-room-badge">#{currentChat}</span>
-                </div>
-                <span className="chat-sub-hint">Instant text, link, and screenshot collaboration</span>
-              </div>
-            </div>
-
-            <div className="global-chat-header-actions">
-              <div className="chat-identity-pill">
-                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>person</span>
-                <span>{guestName.trim() || 'Colleague'}</span>
-                <button
-                  type="button"
-                  className="btn-edit-identity"
-                  title="Change your display name"
-                  onClick={() => {
-                    const next = prompt('Enter your display name:', guestName || 'Colleague');
-                    if (next && next.trim()) {
-                      setGuestName(next.trim());
-                      sessionStorage.setItem('pcs_guest_name', next.trim());
-                      showToast(`Display name set to ${next.trim()}`);
-                    }
-                  }}
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>edit</span>
-                </button>
-              </div>
-
-              <button
-                type="button"
-                className="btn-chat-copy-link"
-                onClick={() => handleCopyChatShareLink(currentChat)}
-                title="Copy shareable link for this room"
-              >
-                <span className="material-symbols-outlined">share</span>
-                <span className="btn-text-desktop">Share Room</span>
-              </button>
-
-              <button
-                type="button"
-                className="btn-chat-switch-room"
-                onClick={() => setIsCreateRoomModalOpen(true)}
-                title="Create or join another room"
-              >
-                <span className="material-symbols-outlined">swap_horiz</span>
-                <span className="btn-text-desktop">Switch Room</span>
-              </button>
-
-              <button
-                type="button"
-                className="btn-switch-workspace"
-                onClick={() => {
-                  setIsGlobalChatMode(false);
-                  window.history.replaceState({}, document.title, window.location.pathname);
-                }}
-                title="Return to Workspace Dashboard"
-              >
-                <span className="material-symbols-outlined">dashboard</span>
-                <span className="btn-text-desktop">Dashboard</span>
-              </button>
-            </div>
-          </div>
-        </header>
-
-        <main className="global-chat-stage">
-          <div className="global-chat-card">
-            {/* Room Welcome Header */}
-            <div className="global-chat-banner">
-              <div className="banner-info">
-                <span className="material-symbols-outlined banner-icon">lock_open</span>
-                <div>
-                  <strong>Room #{currentChat}</strong>
-                  <p>Open work stream. Anyone with the room code or link can join and share instantly from any device.</p>
-                </div>
-              </div>
-              <div className="banner-stats">
-                <div className="chat-online-indicator">
-                  <span className="pulse-green-dot"></span>
-                  <span className="online-count-label">
-                    {chatOnlineCount} {chatOnlineCount === 1 ? 'member online' : 'members online'}
-                  </span>
-                </div>
-                <span className="message-count-badge">{chatMessages.length} messages</span>
-              </div>
-            </div>
-
-            {/* Messages Stream */}
-            <div
-              className={`global-chat-messages-container ${isDraggingOverChat ? 'is-drag-over' : ''}`}
-              onPaste={handlePasteEvent}
-              onScroll={handleChatScroll}
-              onDragOver={handleChatDragOver}
-              onDragLeave={handleChatDragLeave}
-              onDrop={handleChatDrop}
-            >
-              {isDraggingOverChat && (
-                <div className="chat-dropzone-overlay">
-                  <span className="material-symbols-outlined drop-icon">cloud_upload</span>
-                  <p>Drop image or screenshot here to share instantly</p>
-                </div>
-              )}
-
-              {chatMessages.length === 0 ? (
-                <div className="global-chat-empty-state">
-                  <span className="material-symbols-outlined empty-icon">forum</span>
-                  <h3>Welcome to #{currentChat}</h3>
-                  <p>No messages yet. Send a quick update, paste a screenshot, or share a link to start collaborating.</p>
-                  <div className="empty-state-tips">
-                    <span className="tip-item">
-                      <span className="material-symbols-outlined">link</span>
-                      Links are automatically converted into clickable buttons
-                    </span>
-                    <span className="tip-item">
-                      <span className="material-symbols-outlined">image</span>
-                      Paste or upload screenshots with high-res Lightbox viewing
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="global-chat-messages-list">
-                  {chatMessages.map((msg, idx) => {
-                    const isSelf =
-                      (guestName && msg.sender_name === guestName) ||
-                      msg.sender_id === (sessionStorage.getItem('pcs_guest_office_id') || sessionStorage.getItem('pcs_user_id'));
-                    const initial = (msg.sender_name || 'U').charAt(0).toUpperCase();
-                    const domId = `chat-msg-${msg.id || msg.client_msg_id || idx}`;
-                    const prevMsg = idx > 0 ? chatMessages[idx - 1] : null;
-                    const showDateSep = shouldShowDateSeparator(msg.created_at, prevMsg?.created_at);
-                    const dateLabel = showDateSep ? getChatDayLabel(msg.created_at) : null;
-
-                    return (
-                      <React.Fragment key={msg.id || msg.client_msg_id || idx}>
-                        {dateLabel && (
-                          <div className="chat-date-separator">
-                            <span className="date-chip">{dateLabel}</span>
-                          </div>
-                        )}
-                        <div
-                          id={domId}
-                          className={`global-chat-msg-row ${isSelf ? 'msg-outgoing' : 'msg-incoming'} ${msg.is_deleted ? 'msg-is-deleted' : ''}`}
-                        >
-                          {!isSelf && (
-                            <div className="chat-avatar-bubble" title={msg.sender_name}>
-                              {initial}
-                            </div>
-                          )}
-                          <div className="chat-bubble-content">
-                            <div className="chat-bubble-meta">
-                              <span className="chat-sender-name">{msg.sender_name || 'Colleague'}</span>
-                              <div className="chat-meta-right">
-                                <span className="chat-time-tag">
-                                  {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                                </span>
-                                {isSelf && !msg.is_deleted && (
-                                  <span className="chat-read-receipt" title="Delivered">
-                                    <span className="material-symbols-outlined receipt-icon">done_all</span>
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                            {renderMessageContent(msg)}
-                            {!msg.is_deleted && (
-                              <div className="chat-bubble-actions">
-                                <button
-                                  type="button"
-                                  className="btn-bubble-action"
-                                  onClick={() => handleReplyChatMessage(msg)}
-                                  title="Reply to message"
-                                >
-                                  <span className="material-symbols-outlined">reply</span>
-                                </button>
-                                {msg.content && (
-                                  <button
-                                    type="button"
-                                    className="btn-bubble-action"
-                                    onClick={() => handleCopyMessageText(msg)}
-                                    title="Copy message text"
-                                  >
-                                    <span className="material-symbols-outlined">content_copy</span>
-                                  </button>
-                                )}
-                                {isSelf && (
-                                  <button
-                                    type="button"
-                                    className="btn-bubble-action btn-bubble-action-delete"
-                                    onClick={() => handleDeleteChatMessage(msg.id)}
-                                    title="Delete for everyone"
-                                  >
-                                    <span className="material-symbols-outlined">delete</span>
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                          {isSelf && (
-                            <div className="chat-avatar-bubble self" title="You">
-                              {initial}
-                            </div>
-                          )}
-                        </div>
-                      </React.Fragment>
-                    );
-                  })}
-                  <div ref={chatMessagesEndRef} />
-                </div>
-              )}
-
-              {showScrollDown && (
-                <button
-                  type="button"
-                  className="btn-scroll-bottom"
-                  onClick={() => scrollToBottom(true)}
-                  title="Scroll to latest messages"
-                >
-                  <span className="material-symbols-outlined">arrow_downward</span>
-                  {unreadWhileScrolled > 0 && (
-                    <span className="scroll-unread-badge">{unreadWhileScrolled}</span>
-                  )}
-                </button>
-              )}
-            </div>
-
-            {/* Typing Indicator Bar */}
-            {typingUsers.length > 0 && (
-              <div className="chat-typing-indicator-bar">
-                <div className="typing-bubble">
-                  <span className="typing-dot"></span>
-                  <span className="typing-dot"></span>
-                  <span className="typing-dot"></span>
-                </div>
-                <span className="typing-text">
-                  {typingUsers.length === 1
-                    ? `${typingUsers[0]} is typing...`
-                    : `${typingUsers.slice(0, 2).join(', ')} are typing...`}
-                </span>
-              </div>
-            )}
-
-            {/* Quoted Reply Preview Bar */}
-            {replyingTo && (
-              <div className="chat-reply-preview-bar">
-                <div className="reply-preview-content">
-                  <div className="reply-preview-sender">
-                    <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>reply</span>
-                    <span>Replying to <strong>{replyingTo.sender}</strong></span>
-                  </div>
-                  <div className="reply-preview-text">{replyingTo.content}</div>
-                </div>
-                <button
-                  type="button"
-                  className="btn-cancel-reply"
-                  onClick={() => setReplyingTo(null)}
-                  title="Cancel reply (Esc)"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
-                </button>
-              </div>
-            )}
-
-            {/* Attachment preview if pending */}
-            {chatAttachment && (
-              <div className="chat-pending-attachment-bar">
-                <div className="pending-thumb-wrapper">
-                  <img src={chatAttachment.url} alt="Pending upload preview" />
-                  <span className="pending-name">{chatAttachment.name}</span>
-                </div>
-                <button
-                  type="button"
-                  className="btn-remove-attachment"
-                  onClick={() => setChatAttachment(null)}
-                  title="Remove image"
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-            )}
-
-            {/* Global Chat Composer */}
-            <div className="global-chat-composer-bar">
-              <input
-                type="file"
-                ref={chatFileInputRef}
-                accept="image/*"
-                onChange={handleImageSelect}
-                style={{ display: 'none' }}
-              />
-              <button
-                type="button"
-                className="btn-attach-image"
-                onClick={() => chatFileInputRef.current?.click()}
-                title="Attach Screenshot or Image"
-              >
-                <span className="material-symbols-outlined">attach_file</span>
-              </button>
-
-              <div className="composer-input-wrap">
-                <input
-                  type="text"
-                  placeholder="Type message, share link, or paste image... (Press Enter to send)"
-                  value={chatInputText}
-                  onChange={(e) => handleChatInputChange(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendChatMessage();
-                    }
-                  }}
-                  onPaste={handlePasteEvent}
-                  autoFocus
-                />
-              </div>
-
-              <button
-                type="button"
-                className="btn-chat-send-action"
-                onClick={() => handleSendChatMessage()}
-                disabled={!chatInputText.trim() && !chatAttachment}
-                title="Send message"
-              >
-                <span className="material-symbols-outlined">send</span>
-                <span className="btn-send-label">Send</span>
-              </button>
-            </div>
-          </div>
-        </main>
-
-        {/* Create or Switch Global Work Room Modal */}
-        {isCreateRoomModalOpen && (
-          <div className="create-room-modal-overlay">
-            <div className="create-room-modal-card">
-              <div className="create-room-modal-header">
-                <div className="modal-title-with-icon">
-                  <span className="material-symbols-outlined modal-header-icon">forum</span>
-                  <div>
-                    <h3>Global Online Work Chat</h3>
-                    <p>Create or join a room from any device. Share links, images, and chat instantly.</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="btn-modal-close"
-                  onClick={() => setIsCreateRoomModalOpen(false)}
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-
-              <div className="create-room-modal-body">
-                <div className="create-room-quick-section">
-                  <h4>Option 1: Quick Create New Room</h4>
-                  <p>Generates a dedicated collaboration room code that you can share with colleagues.</p>
-                  <button
-                    type="button"
-                    className="btn-primary-create-room"
-                    onClick={() => handleCreateNewRoom()}
-                  >
-                    <span className="material-symbols-outlined">add_circle</span>
-                    <span>Create New Room</span>
-                  </button>
-                </div>
-
-                <div className="create-room-divider">
-                  <span>OR</span>
-                </div>
-
-                <div className="join-room-code-section">
-                  <h4>Option 2: Enter Room Code to Join</h4>
-                  <p>Have a room code from a teammate? Enter it here to open the room on this device.</p>
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      handleCreateNewRoom(newRoomInputCode);
-                    }}
-                    className="join-room-form"
-                  >
-                    <div className="join-input-wrap">
-                      <span className="material-symbols-outlined">key</span>
-                      <input
-                        type="text"
-                        placeholder="e.g. design-review, work-842..."
-                        value={newRoomInputCode}
-                        onChange={(e) => setNewRoomInputCode(e.target.value)}
-                        autoFocus
-                      />
-                    </div>
-                    <button type="submit" className="btn-join-room-submit">
-                      <span>Join Room</span>
-                      <span className="material-symbols-outlined">arrow_forward</span>
-                    </button>
-                  </form>
-                </div>
-
-                <div className="create-room-divider">
-                  <span>OR</span>
-                </div>
-
-                <div className="quick-general-section">
-                  <button
-                    type="button"
-                    className="btn-quick-general-room"
-                    onClick={() => handleCreateNewRoom('general')}
-                  >
-                    <span className="material-symbols-outlined">tag</span>
-                    <span>Open General Team Chat (#general)</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Image Lightbox Fullscreen Viewer */}
-        {activeImageLightbox && (
-          <div className="image-lightbox-overlay" onClick={() => setActiveImageLightbox(null)}>
-            <div className="image-lightbox-content" onClick={(e) => e.stopPropagation()}>
-              <div className="lightbox-header">
-                <span>Shared Work Asset</span>
-                <div className="lightbox-actions">
-                  <a
-                    href={activeImageLightbox}
-                    download="shared-work-image.png"
-                    className="lightbox-download-btn"
-                    title="Download Image"
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>download</span>
-                    <span>Save</span>
-                  </a>
-                  <button
-                    type="button"
-                    className="lightbox-close-btn"
-                    onClick={() => setActiveImageLightbox(null)}
-                    title="Close Viewer"
-                  >
-                    <span className="material-symbols-outlined">close</span>
-                  </button>
-                </div>
-              </div>
-              <div className="lightbox-img-frame">
-                <img src={activeImageLightbox} alt="Full resolution shared work asset" />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Global Toast Notification */}
-        {toastMessage && (
-          <div className="toast-notice">
-            <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
-            <span>{toastMessage}</span>
-          </div>
-        )}
-      </div>
+      <GlobalChatView
+        currentChat={currentChat}
+        guestName={guestName}
+        setGuestName={setGuestName}
+        showToast={showToast}
+        onCopyChatShareLink={handleCopyChatShareLink}
+        setIsCreateRoomModalOpen={setIsCreateRoomModalOpen}
+        onReturnToDashboard={() => {
+          setIsGlobalChatMode(false);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }}
+        chatOnlineCount={chatOnlineCount}
+        chatMessages={chatMessages}
+        isDraggingOverChat={isDraggingOverChat}
+        handlePasteEvent={handlePasteEvent}
+        handleChatScroll={handleChatScroll}
+        handleChatDragOver={handleChatDragOver}
+        handleChatDragLeave={handleChatDragLeave}
+        handleChatDrop={handleChatDrop}
+        showScrollDown={showScrollDown}
+        scrollToBottom={scrollToBottom}
+        unreadWhileScrolled={unreadWhileScrolled}
+        typingUsers={typingUsers}
+        replyingTo={replyingTo}
+        setReplyingTo={setReplyingTo}
+        chatAttachment={chatAttachment}
+        setChatAttachment={setChatAttachment}
+        chatFileInputRef={chatFileInputRef}
+        handleImageSelect={handleImageSelect}
+        chatInputText={chatInputText}
+        handleChatInputChange={handleChatInputChange}
+        handleSendChatMessage={handleSendChatMessage}
+        chatMessagesEndRef={chatMessagesEndRef}
+        handleReplyChatMessage={handleReplyChatMessage}
+        handleCopyMessageText={handleCopyMessageText}
+        handleDeleteChatMessage={handleDeleteChatMessage}
+        activeImageLightbox={activeImageLightbox}
+        setActiveImageLightbox={setActiveImageLightbox}
+        toastMessage={toastMessage}
+        isCreateRoomModalOpen={isCreateRoomModalOpen}
+        handleCreateNewRoom={handleCreateNewRoom}
+        newRoomInputCode={newRoomInputCode}
+        setNewRoomInputCode={setNewRoomInputCode}
+      />
     );
   }
 
@@ -3934,630 +3014,64 @@ function App() {
   if (isGuestMode && !activeCallRoom) {
     const currentRoom = activeCallRoom || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('room') : '');
     return (
-      <div className="guest-screen-wrapper">
-        <header className="guest-header">
-          <div className="guest-header-inner">
-            <div className="brand-group">
-              <span className="brand-logo-badge">PCS</span>
-              <h2 className="brand-title">Executive Meeting Room</h2>
-            </div>
-            <div className="guest-header-meta">
-              <span className="guest-room-pill">
-                Room: <strong>{currentRoom}</strong>
-              </span>
-              <button
-                type="button"
-                className={`guest-header-chat-btn ${isRoomChatOpen ? 'active' : ''}`}
-                onClick={() => {
-                  setIsRoomChatOpen(!isRoomChatOpen);
-                  if (currentRoom) handleLoadRoomMessages(currentRoom);
-                }}
-                title="Toggle Work Chat, Links & Images"
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>forum</span>
-                <span>Chat ({chatMessages.length})</span>
-              </button>
-              <div className={`call-quality-pill ${callQuality}`}>
-                <span className="quality-dot"></span>
-                <span className="quality-text">
-                  {callQuality === 'stable' && 'P2P Direct'}
-                  {callQuality === 'relayed' && 'TURN Relay'}
-                  {callQuality === 'connecting' && 'Connecting...'}
-                  {callQuality === 'reconnecting' && 'Reconnecting...'}
-                  {callQuality === 'failed' && 'Offline'}
-                </span>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        <main className="guest-stage">
-          {guestKnockStatus !== 'admitted' ? (
-            <div className="guest-lobby-container">
-              <div className="guest-lobby-card">
-                <div className="guest-lobby-status-banner">
-                  {isHostOnlineInRoom ? (
-                    <div className="meeting-live-badge is-on large">
-                      <span className="live-pulse-dot"></span>
-                      <span>MEETING IS ON — Host is in the Room</span>
-                    </div>
-                  ) : (
-                    <div className="meeting-live-badge scheduled large">
-                      <span className="scheduled-dot"></span>
-                      <span>Waiting for Host to Start Meeting</span>
-                    </div>
-                  )}
-                </div>
-
-                {guestKnockStatus === 'idle' && (
-                  <div className="guest-checkin-flow">
-                    <div className="guest-checkin-header">
-                      <span className="material-symbols-outlined guest-badge-icon">videocam</span>
-                      <div>
-                        <h3>Join Executive Meeting: #{currentRoom}</h3>
-                        <p>Join this video call from any phone, laptop, or desktop with one click.</p>
-                      </div>
-                    </div>
-
-                    <div className="guest-form-group">
-                      <label htmlFor="guest-full-name">Your Name (Optional)</label>
-                      <input
-                        id="guest-full-name"
-                        type="text"
-                        placeholder="e.g. Sarah Connor (or Guest)"
-                        value={guestName}
-                        onChange={(e) => setGuestName(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleGuestDirectQuickJoin(currentRoom);
-                          }
-                        }}
-                        autoFocus
-                      />
-                    </div>
-
-                    <div className="guest-form-group">
-                      <label htmlFor="guest-office-id">Office ID / Note (Optional)</label>
-                      <input
-                        id="guest-office-id"
-                        type="text"
-                        placeholder="e.g. Mobile User / Remote"
-                        value={guestOfficeId}
-                        onChange={(e) => setGuestOfficeId(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleGuestDirectQuickJoin(currentRoom);
-                          }
-                        }}
-                      />
-                    </div>
-
-                    <div className="guest-checkin-actions" style={{ flexDirection: 'column', gap: '10px' }}>
-                      <button
-                        type="button"
-                        className="btn-quick-direct-join"
-                        style={{ width: '100%', padding: '14px 20px', fontSize: '15px', fontWeight: 'bold' }}
-                        onClick={() => handleGuestDirectQuickJoin(currentRoom)}
-                        title="Direct instant video call with zero boundaries"
-                      >
-                        <span className="material-symbols-outlined">videocam</span>
-                        <span>Join Video Call Now (Instant)</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-knock-join"
-                        style={{ width: '100%', padding: '10px 16px', fontSize: '13px' }}
-                        onClick={() => handleGuestKnock(currentRoom)}
-                        title="Send knock request for host verification"
-                      >
-                        <span className="material-symbols-outlined">meeting_room</span>
-                        <span>Knock & Request Host Admission</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {guestKnockStatus === 'knocking' && (
-                  <div className="guest-knocking-flow">
-                    <div className="radar-spinner"></div>
-                    <h3>Knock Request Sent to Host</h3>
-                    <p>The meeting host is verifying your Office ID and name.</p>
-
-                    <div className="guest-credential-summary">
-                      <div className="summary-field">
-                        <span className="summary-label">Name:</span>
-                        <strong className="summary-val">{guestName}</strong>
-                      </div>
-                      <div className="summary-field">
-                        <span className="summary-label">Office ID:</span>
-                        <strong className="summary-val monospace">{guestOfficeId}</strong>
-                      </div>
-                      <div className="summary-field">
-                        <span className="summary-label">Room:</span>
-                        <strong className="summary-val monospace">{currentRoom}</strong>
-                      </div>
-                    </div>
-
-                    <div className="knocking-status-note">
-                      {isHostOnlineInRoom ? (
-                        <span>Host is currently in the room and reviewing join requests.</span>
-                      ) : (
-                        <span>Host has not joined yet. You will be prompted as soon as they enter.</span>
-                      )}
-                    </div>
-
-                    <div className="knocking-flow-actions">
-                      <button
-                        type="button"
-                        className="btn-bypass-knock"
-                        onClick={() => handleGuestDirectQuickJoin(currentRoom)}
-                        title="Bypass waiting and connect to call immediately"
-                      >
-                        <span className="material-symbols-outlined">bolt</span>
-                        <span>Direct Quick Join Now (No Wait)</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-cancel-knock"
-                        onClick={handleCancelKnock}
-                      >
-                        <span className="material-symbols-outlined">close</span>
-                        <span>Cancel Request</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {guestKnockStatus === 'denied' && (
-                  <div className="guest-denied-flow">
-                    <span className="material-symbols-outlined denied-icon">gpp_bad</span>
-                    <h3>Admission Declined</h3>
-                    <p>{guestDeniedReason || 'The host declined entry for this meeting session.'}</p>
-                    <button
-                      type="button"
-                      className="btn-retry-knock"
-                      onClick={() => setGuestKnockStatus('idle')}
-                    >
-                      <span className="material-symbols-outlined">replay</span>
-                      <span>Try Again with Different Details</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : activeCallRoom ? (
-            <div className="guest-video-grid">
-              {/* Remote Video Container */}
-              <div className="guest-video-box remote">
-                <video
-                  ref={(el) => {
-                    remoteVideoRef.current = el;
-                    if (el && remoteStreamRef.current && el.srcObject !== remoteStreamRef.current) {
-                      el.srcObject = remoteStreamRef.current;
-                      el.play().catch(() => {});
-                    }
-                  }}
-                  autoPlay
-                  playsInline
-                  className="guest-video-element"
-                />
-                {!isCallConnected && (
-                  <div className="guest-waiting-hud">
-                    <span className="material-symbols-outlined waiting-icon">video_camera_front</span>
-                    <h3>{callStatusText || 'Waiting for host to connect...'}</h3>
-                    <p>Share this link with attendees or wait for the host to enter.</p>
-                    <button type="button" className="btn-copy-invite" onClick={handleCopyGuestLink}>
-                      <span className="material-symbols-outlined">content_copy</span>
-                      <span>Copy Meeting Link</span>
-                    </button>
-                  </div>
-                )}
-                <div className="video-participant-badge">
-                  Host / Peer {isCallConnected ? '(Live)' : ''}
-                </div>
-              </div>
-
-              {/* Local Video Container */}
-              <div className="guest-video-box local">
-                {isVideoOff ? (
-                  <div className="guest-camera-off-slate">
-                    <span className="material-symbols-outlined">videocam_off</span>
-                    <span>Camera Off</span>
-                  </div>
-                ) : (
-                  <video
-                    ref={(el) => {
-                      localVideoRef.current = el;
-                      const s = screenStreamRef.current || localStreamRef.current;
-                      if (el && s && el.srcObject !== s) {
-                        el.srcObject = s;
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="guest-video-element local-mirror"
-                  />
-                )}
-                <div className="video-participant-badge">
-                  You {isAudioMuted ? '(Muted)' : ''}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="guest-rejoin-card">
-              <h2>You have left the meeting</h2>
-              <p>You can rejoin this room or switch to the main workspace.</p>
-              <div className="guest-rejoin-actions">
-                <button
-                  type="button"
-                  className="btn-green"
-                  style={{ height: '38px', padding: '0 18px', fontSize: '13px' }}
-                  onClick={() => {
-                    const r = new URLSearchParams(window.location.search).get('room');
-                    if (r) handleJoinCallRoom(r, false);
-                  }}
-                >
-                  <span className="material-symbols-outlined">videocam</span>
-                  <span>Rejoin Meeting</span>
-                </button>
-                <button
-                  type="button"
-                  className="btn-blue"
-                  style={{ height: '38px', padding: '0 18px', fontSize: '13px' }}
-                  onClick={() => setIsGuestMode(false)}
-                >
-                  <span className="material-symbols-outlined">dashboard</span>
-                  <span>Open Workspace Dashboard</span>
-                </button>
-              </div>
-            </div>
-          )}
-        </main>
-
-        {activeCallRoom && guestKnockStatus === 'admitted' && (
-          <footer className="guest-controls-bar">
-            <button
-              type="button"
-              className={`guest-ctl-btn ${isAudioMuted ? 'active-mute' : ''}`}
-              onClick={handleToggleAudio}
-              title={isAudioMuted ? 'Unmute' : 'Mute'}
-            >
-              <span className="material-symbols-outlined">{isAudioMuted ? 'mic_off' : 'mic'}</span>
-              <span>{isAudioMuted ? 'Unmute' : 'Mute'}</span>
-            </button>
-            <button
-              type="button"
-              className={`guest-ctl-btn ${isVideoOff ? 'active-mute' : ''}`}
-              onClick={handleToggleVideo}
-              title={isVideoOff ? 'Start Video' : 'Stop Video'}
-            >
-              <span className="material-symbols-outlined">{isVideoOff ? 'videocam_off' : 'videocam'}</span>
-              <span>{isVideoOff ? 'Start Video' : 'Stop Video'}</span>
-            </button>
-            <button
-              type="button"
-              className={`guest-ctl-btn ${isScreenSharing ? 'active-share' : ''}`}
-              onClick={handleToggleScreenShare}
-              title={isScreenSharing ? 'Stop Share' : 'Share Screen'}
-            >
-              <span className="material-symbols-outlined">{isScreenSharing ? 'stop_screen_share' : 'screen_share'}</span>
-              <span>{isScreenSharing ? 'Stop Share' : 'Share'}</span>
-            </button>
-            <button
-              type="button"
-              className={`guest-ctl-btn ${isRoomChatOpen ? 'active-chat' : ''}`}
-              onClick={() => {
-                setIsRoomChatOpen(!isRoomChatOpen);
-                if (currentRoom) handleLoadRoomMessages(currentRoom);
-              }}
-              title="Toggle Room Chat, Links & Images"
-            >
-              <span className="material-symbols-outlined">{isRoomChatOpen ? 'speaker_notes_off' : 'forum'}</span>
-              <span>Chat ({chatMessages.length})</span>
-            </button>
-            <button
-              type="button"
-              className="guest-ctl-btn"
-              onClick={handleCopyGuestLink}
-              title="Copy Meeting Link"
-            >
-              <span className="material-symbols-outlined">link</span>
-              <span>Copy Link</span>
-            </button>
-            <button
-              type="button"
-              className="guest-ctl-btn end-call-btn"
-              onClick={handleEndCall}
-              title="Leave Call"
-            >
-              <span className="material-symbols-outlined">call_end</span>
-              <span>Leave</span>
-            </button>
-          </footer>
-        )}
-
-        {/* Floating Host Admission Dialog for Knocking Guests (if host is in guest view) */}
-        {pendingKnocks.length > 0 && (
-          <div className="host-knock-modal-overlay">
-            <div className="host-knock-card">
-              <div className="host-knock-header">
-                <span className="material-symbols-outlined knock-bell-icon">badge</span>
-                <div>
-                  <h3>Guest Requesting Admission ({pendingKnocks.length})</h3>
-                  <p>Verify Office ID and Full Name before admitting</p>
-                </div>
-              </div>
-              <div className="host-knock-body">
-                {pendingKnocks.map((k) => (
-                  <div key={k.id} className="knock-item-row">
-                    <div className="knock-guest-info">
-                      <div className="knock-guest-name-row">
-                        <span className="knock-guest-name">{k.name}</span>
-                        <span className="knock-office-badge">ID: {k.officeId}</span>
-                      </div>
-                      <span className="knock-room-tag">Room: {k.roomId}</span>
-                    </div>
-                    <div className="knock-actions">
-                      <button
-                        type="button"
-                        className="btn-admit-guest"
-                        onClick={() => handleAdmitGuest(k.id, k.roomId)}
-                        title="Admit guest into meeting"
-                      >
-                        <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>how_to_reg</span>
-                        <span>Admit</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-deny-guest"
-                        onClick={() => handleDenyGuest(k.id, k.roomId)}
-                        title="Decline guest admission"
-                      >
-                        <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>block</span>
-                        <span>Decline</span>
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Floating Room Chat in Guest View */}
-        {isRoomChatOpen && currentRoom && (
-          <div className="room-chat-floating-dock guest-chat-dock">
-            <div className="room-chat-header">
-              <div className="room-chat-title-group">
-                <span className="live-chat-dot"></span>
-                <span className="room-chat-name">Room: <strong>{currentRoom}</strong></span>
-                <span className="room-chat-count">{chatMessages.length} msgs</span>
-              </div>
-              <div className="room-chat-header-actions">
-                <button
-                  type="button"
-                  className="chat-hdr-btn"
-                  onClick={() => handleCopyRoomShareLink(currentRoom)}
-                  title="Copy Room Link"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>link</span>
-                  <span>Copy Link</span>
-                </button>
-                <button
-                  type="button"
-                  className="chat-hdr-btn close-chat-btn"
-                  onClick={() => setIsRoomChatOpen(false)}
-                  title="Close Chat"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="room-chat-messages-scroll">
-              {chatMessages.length === 0 ? (
-                <div className="chat-empty-slate">
-                  <span className="material-symbols-outlined chat-empty-icon">forum</span>
-                  <p>Welcome to <strong>{currentRoom}</strong></p>
-                  <span>Start the conversation. Share notes, links, or drop images from your device.</span>
-                  <button
-                    type="button"
-                    className="btn-copy-room-first"
-                    onClick={() => handleCopyRoomShareLink(currentRoom)}
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>content_copy</span>
-                    <span>Copy Room Code</span>
-                  </button>
-                </div>
-              ) : (
-                chatMessages.map((m, idx) => {
-                  const isSelf = m.sender_name === (guestName.trim() || 'Colleague');
-                  const timeStr = m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-                  const domId = `chat-msg-${m.id || m.client_msg_id || idx}`;
-                  return (
-                    <div
-                      key={m.id || m.client_msg_id || idx}
-                      id={domId}
-                      className={`chat-bubble-row ${isSelf ? 'self' : 'peer'} ${m.is_deleted ? 'msg-is-deleted' : ''}`}
-                    >
-                      <div className="chat-bubble">
-                        <div className="chat-bubble-meta">
-                          <span className="chat-sender-name">{m.sender_name}</span>
-                          <div className="chat-meta-right">
-                            <span className="chat-timestamp">{timeStr}</span>
-                            {isSelf && !m.is_deleted && (
-                              <span className="chat-read-receipt" title="Delivered">
-                                <span className="material-symbols-outlined receipt-icon">done_all</span>
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="chat-bubble-content">
-                          {renderMessageContent(m)}
-                        </div>
-                        {!m.is_deleted && (
-                          <div className="chat-bubble-actions">
-                            <button
-                              type="button"
-                              className="btn-bubble-action"
-                              onClick={() => handleReplyChatMessage(m)}
-                              title="Reply to message"
-                            >
-                              <span className="material-symbols-outlined">reply</span>
-                            </button>
-                            {m.content && (
-                              <button
-                                type="button"
-                                className="btn-bubble-action"
-                                onClick={() => handleCopyMessageText(m)}
-                                title="Copy message text"
-                              >
-                                <span className="material-symbols-outlined">content_copy</span>
-                              </button>
-                            )}
-                            {isSelf && (
-                              <button
-                                type="button"
-                                className="btn-bubble-action btn-bubble-action-delete"
-                                onClick={() => handleDeleteChatMessage(m.id)}
-                                title="Delete for everyone"
-                              >
-                                <span className="material-symbols-outlined">delete</span>
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-              <div ref={chatMessagesEndRef} />
-            </div>
-
-            <div className="room-chat-composer">
-              {replyingTo && (
-                <div className="chat-reply-preview-bar">
-                  <div className="reply-preview-content">
-                    <div className="reply-preview-sender">
-                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>reply</span>
-                      <span>Replying to <strong>{replyingTo.sender}</strong></span>
-                    </div>
-                    <div className="reply-preview-text">{replyingTo.content}</div>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-cancel-reply"
-                    onClick={() => setReplyingTo(null)}
-                    title="Cancel reply"
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
-                  </button>
-                </div>
-              )}
-
-              {chatAttachment && (
-                <div className="chat-attachment-preview">
-                  <img src={chatAttachment.url} alt="Attachment Preview" className="preview-thumb" />
-                  <span className="preview-filename">{chatAttachment.name}</span>
-                  <button
-                    type="button"
-                    className="btn-remove-attachment"
-                    onClick={() => setChatAttachment(null)}
-                    title="Remove attachment"
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
-                  </button>
-                </div>
-              )}
-
-              <div className="chat-composer-input-row">
-                <input
-                  type="file"
-                  ref={chatFileInputRef}
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={handleImageSelect}
-                />
-                <button
-                  type="button"
-                  className="btn-attach-image"
-                  onClick={() => chatFileInputRef.current?.click()}
-                  title="Attach photo or image"
-                >
-                  <span className="material-symbols-outlined">image</span>
-                </button>
-                <textarea
-                  className="chat-text-input"
-                  placeholder="Type message, paste image, or drop work link..."
-                  rows="1"
-                  value={chatInputText}
-                  onChange={(e) => setChatInputText(e.target.value)}
-                  onPaste={handlePasteEvent}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendChatMessage();
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn-chat-send"
-                  onClick={handleSendChatMessage}
-                  disabled={!chatInputText.trim() && !chatAttachment}
-                  title="Send Message"
-                >
-                  <span className="material-symbols-outlined">send</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Image Lightbox Fullscreen Viewer for Guest View */}
-        {activeImageLightbox && (
-          <div className="image-lightbox-overlay" onClick={() => setActiveImageLightbox(null)}>
-            <div className="image-lightbox-content" onClick={(e) => e.stopPropagation()}>
-              <div className="lightbox-header">
-                <span>Shared Work Image</span>
-                <div className="lightbox-actions">
-                  <a
-                    href={activeImageLightbox}
-                    download="shared-work-image.png"
-                    className="lightbox-download-btn"
-                    title="Download Image"
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>download</span>
-                    <span>Save</span>
-                  </a>
-                  <button
-                    type="button"
-                    className="lightbox-close-btn"
-                    onClick={() => setActiveImageLightbox(null)}
-                    title="Close Viewer"
-                  >
-                    <span className="material-symbols-outlined">close</span>
-                  </button>
-                </div>
-              </div>
-              <div className="lightbox-img-frame">
-                <img src={activeImageLightbox} alt="Full resolution shared work asset" />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {toastMessage && (
-          <div className="toast-notice">
-            <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
-            <span>{toastMessage}</span>
-          </div>
-        )}
-      </div>
+      <GuestLobbyView
+        currentRoom={currentRoom}
+        isRoomChatOpen={isRoomChatOpen}
+        setIsRoomChatOpen={setIsRoomChatOpen}
+        handleLoadRoomMessages={handleLoadRoomMessages}
+        chatMessages={chatMessages}
+        callQuality={callQuality}
+        guestKnockStatus={guestKnockStatus}
+        setGuestKnockStatus={setGuestKnockStatus}
+        guestDeniedReason={guestDeniedReason}
+        isHostOnlineInRoom={isHostOnlineInRoom}
+        guestName={guestName}
+        setGuestName={setGuestName}
+        guestOfficeId={guestOfficeId}
+        setGuestOfficeId={setGuestOfficeId}
+        handleGuestDirectQuickJoin={handleGuestDirectQuickJoin}
+        handleGuestKnock={handleGuestKnock}
+        handleCancelKnock={handleCancelKnock}
+        activeCallRoom={activeCallRoom}
+        isCallConnected={isCallConnected}
+        callStatusText={callStatusText}
+        handleCopyGuestLink={handleCopyGuestLink}
+        remoteVideoRef={remoteVideoRef}
+        remoteStreamRef={remoteStreamRef}
+        localVideoRef={localVideoRef}
+        localStreamRef={localStreamRef}
+        screenStreamRef={screenStreamRef}
+        isVideoOff={isVideoOff}
+        isAudioMuted={isAudioMuted}
+        handleJoinCallRoom={handleJoinCallRoom}
+        setIsGuestMode={setIsGuestMode}
+        handleToggleAudio={handleToggleAudio}
+        handleToggleVideo={handleToggleVideo}
+        handleToggleScreenShare={handleToggleScreenShare}
+        isScreenSharing={isScreenSharing}
+        handleEndCall={handleEndCall}
+        pendingKnocks={pendingKnocks}
+        handleAdmitGuest={handleAdmitGuest}
+        handleDenyGuest={handleDenyGuest}
+        onCopyRoomShareLink={handleCopyRoomShareLink}
+        chatInputText={chatInputText}
+        setChatInputText={setChatInputText}
+        chatAttachment={chatAttachment}
+        setChatAttachment={setChatAttachment}
+        chatFileInputRef={chatFileInputRef}
+        handleImageSelect={handleImageSelect}
+        handlePasteEvent={handlePasteEvent}
+        handleSendChatMessage={handleSendChatMessage}
+        chatMessagesEndRef={chatMessagesEndRef}
+        replyingTo={replyingTo}
+        setReplyingTo={setReplyingTo}
+        handleReplyChatMessage={handleReplyChatMessage}
+        handleCopyMessageText={handleCopyMessageText}
+        handleDeleteChatMessage={handleDeleteChatMessage}
+        activeImageLightbox={activeImageLightbox}
+        setActiveImageLightbox={setActiveImageLightbox}
+        toastMessage={toastMessage}
+      />
     );
   }
 
@@ -5035,1746 +3549,178 @@ function App() {
         <div className="content-grid">
           {/* Left Main View (Calendar, Table, Cards, Analytics) */}
           <div>
-            {/* Calendar View */}
             {viewMode === 'calendar' && (
-              <div className="calendar-card">
-                {/* Executive Calendar Top Bar */}
-                <div className="calendar-top">
-                  <div className="cal-header-left">
-                    <h2>{monthNames[calMonth]} {calYear}</h2>
-                    <div className="cal-load-chip">
-                      <span>{monthTasksCount} Tasks</span>
-                      <span className="chip-dot">•</span>
-                      <span>{monthMeetingsCount} Meetings</span>
-                    </div>
-                  </div>
-
-                  <div className="cal-header-actions">
-                    <div className="cal-nav-group">
-                      <button type="button" className="cal-nav-btn" onClick={handlePrevPeriod} title="Previous Period">
-                        <span className="material-symbols-outlined">chevron_left</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="cal-nav-btn"
-                        onClick={() => {
-                          setCurrentCalendarDate(new Date());
-                          setSelectedDate(todayStr);
-                        }}
-                      >
-                        Today
-                      </button>
-                      <button type="button" className="cal-nav-btn" onClick={handleNextPeriod} title="Next Period">
-                        <span className="material-symbols-outlined">chevron_right</span>
-                      </button>
-                    </div>
-
-                    {/* Sub-View Switcher: Month vs. Week */}
-                    <div className="cal-view-segmented">
-                      <button
-                        type="button"
-                        className={`cal-view-btn ${calSubView === 'month' ? 'active' : ''}`}
-                        onClick={() => setCalSubView('month')}
-                      >
-                        Month
-                      </button>
-                      <button
-                        type="button"
-                        className={`cal-view-btn ${calSubView === 'week' ? 'active' : ''}`}
-                        onClick={() => setCalSubView('week')}
-                      >
-                        Week
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Month Grid View */}
-                {calSubView === 'month' && (
-                  <>
-                    <div className="calendar-weekdays-grid">
-                      <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
-                    </div>
-
-                    <div className="calendar-matrix">
-                      {Array.from({ length: firstDayIndex }).map((_, i) => (
-                        <div key={`empty-${i}`} className="cal-matrix-day empty"></div>
-                      ))}
-
-                      {Array.from({ length: daysInMonth }).map((_, i) => {
-                        const dayNum = i + 1;
-                        const formattedDay = String(dayNum).padStart(2, '0');
-                        const formattedMonth = String(calMonth + 1).padStart(2, '0');
-                        const dateStr = `${calYear}-${formattedMonth}-${formattedDay}`;
-                        const dayItems = (itemsByDate[dateStr] || []).sort(
-                          (a, b) => (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2)
-                        );
-                        const isSelected = selectedDate === dateStr;
-                        const isToday = todayStr === dateStr;
-                        const hasTask = dayItems.some((it) => !isMeeting(it));
-                        const hasMeeting = dayItems.some(isMeeting);
-                        const hasUrgent = dayItems.some((it) => it.priority === 'High');
-
-                        return (
-                          <div
-                            key={dateStr}
-                            className={`cal-matrix-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
-                            onClick={() => setSelectedDate(dateStr)}
-                          >
-                            <div className="cal-day-header">
-                              <div className="cal-day-header-left">
-                                <span className="day-header-number">{dayNum}</span>
-                                {/* Density Meter Dots */}
-                                <div className="cal-density-dots">
-                                  {hasTask && <span className="density-dot task"></span>}
-                                  {hasMeeting && <span className="density-dot meeting"></span>}
-                                  {hasUrgent && <span className="density-dot urgent"></span>}
-                                </div>
-                              </div>
-                              <button
-                                type="button"
-                                className="cal-day-add-btn"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedDate(dateStr);
-                                  handleOpenCreateTask(dateStr);
-                                }}
-                                title={`Add task on ${dateStr}`}
-                              >
-                                +
-                              </button>
-                            </div>
-
-                            <div className="cal-day-badges-stack">
-                              {dayItems.slice(0, 2).map((it) => {
-                                const itMeeting = isMeeting(it);
-                                const isUrgent = it.priority === 'High';
-                                return (
-                                  <span
-                                    key={it.id}
-                                    className={`cal-badge ${isUrgent ? 'urgent' : itMeeting ? 'meeting' : 'task'}`}
-                                    title={`${it.time} - ${it.title}`}
-                                  >
-                                    {itMeeting ? '[M] ' : ''}{it.title}
-                                  </span>
-                                );
-                              })}
-                              {dayItems.length > 2 && (
-                                <span className="cal-badge-more">
-                                  +{dayItems.length - 2} more
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-
-                {/* 7-Day Executive Week Sprint Board */}
-                {calSubView === 'week' && (
-                  <div className="cal-week-board">
-                    {activeWeekDates.map((dateStr) => {
-                      const dObj = new Date(dateStr + 'T00:00:00');
-                      const dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dObj.getDay()];
-                      const dayNum = dObj.getDate();
-                      const isSelected = selectedDate === dateStr;
-                      const isToday = todayStr === dateStr;
-                      const dayItems = (itemsByDate[dateStr] || []).sort(
-                        (a, b) => (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2)
-                      );
-
-                      return (
-                        <div
-                          key={dateStr}
-                          className={`cal-week-column ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
-                          onClick={() => setSelectedDate(dateStr)}
-                        >
-                          <div className="cal-week-col-header">
-                            <span className="cal-week-day-name">{dayName}</span>
-                            <span className="cal-week-day-num">{dayNum}</span>
-                            <span className="cal-week-count">{dayItems.length}</span>
-                          </div>
-
-                          <div className="cal-week-col-items">
-                            {dayItems.length === 0 ? (
-                              <div className="cal-week-empty">No items</div>
-                            ) : (
-                              dayItems.map((it) => (
-                                <div
-                                  key={it.id}
-                                  className={`cal-week-item-card ${isMeeting(it) ? 'meeting-card' : 'task-card'}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleOpenEdit(it);
-                                  }}
-                                  title="Click to view/edit details"
-                                >
-                                  <span className="cal-week-item-time">{it.time}</span>
-                                  <strong className="cal-week-item-title">{it.title}</strong>
-                                </div>
-                              ))
-                            )}
-                          </div>
-
-                          <button
-                            type="button"
-                            className="cal-week-add-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedDate(dateStr);
-                              handleOpenCreateTask(dateStr);
-                            }}
-                            title={`Add item on ${dayName}, ${dateStr}`}
-                          >
-                            + Add
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Executive Calendar Footer Strip */}
-                <div className="calendar-footer-strip">
-                  <div className="cal-legend-group">
-                    <span className="cal-legend-item"><span className="legend-dot task"></span> Task</span>
-                    <span className="cal-legend-item"><span className="legend-dot meeting"></span> Meeting</span>
-                    <span className="cal-legend-item"><span className="legend-dot urgent"></span> High Priority</span>
-                    <span className="cal-legend-item"><span className="legend-box today"></span> Today</span>
-                  </div>
-
-                  <div className="cal-progress-group">
-                    <span className="cal-progress-text">
-                      {monthCompletionPercent}% completed ({monthCompletedCount}/{monthItems.length})
-                    </span>
-                    <div className="cal-progress-bar">
-                      <div className="cal-progress-fill" style={{ width: `${monthCompletionPercent}%` }}></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <CalendarView
+                calMonth={calMonth}
+                calYear={calYear}
+                monthNames={monthNames}
+                monthTasksCount={monthTasksCount}
+                monthMeetingsCount={monthMeetingsCount}
+                handlePrevPeriod={handlePrevPeriod}
+                handleNextPeriod={handleNextPeriod}
+                setCurrentCalendarDate={setCurrentCalendarDate}
+                setSelectedDate={setSelectedDate}
+                todayStr={todayStr}
+                calSubView={calSubView}
+                setCalSubView={setCalSubView}
+                firstDayIndex={firstDayIndex}
+                daysInMonth={daysInMonth}
+                itemsByDate={itemsByDate}
+                priorityOrder={priorityOrder}
+                selectedDate={selectedDate}
+                isMeeting={isMeeting}
+                handleOpenCreateTask={handleOpenCreateTask}
+                activeWeekDates={activeWeekDates}
+                handleOpenEdit={handleOpenEdit}
+                monthCompletionPercent={monthCompletionPercent}
+                monthCompletedCount={monthCompletedCount}
+                monthItems={monthItems}
+              />
             )}
 
-            {/* Table View */}
             {viewMode === 'table' && (
-              <div className="master-table-card">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <h2 style={{ fontSize: '18px', fontWeight: '800', margin: 0 }}>All Tasks &amp; Meetings Table</h2>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button className="btn-blue" onClick={() => handleOpenCreateTask(selectedDate)}>
-                      + Add Task
-                    </button>
-                    <button className="btn-green" onClick={() => handleOpenCreateMeeting(selectedDate)}>
-                      + Schedule Meeting
-                    </button>
-                  </div>
-                </div>
-
-                <table className="master-table">
-                  <thead>
-                    <tr>
-                      <th>Title</th>
-                      <th>Type</th>
-                      <th>Priority</th>
-                      <th>Date &amp; Time</th>
-                      <th>Attendees / Link</th>
-                      <th>Status</th>
-                      <th style={{ textAlign: 'right' }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAndSortedItems.length === 0 ? (
-                      <tr>
-                        <td colSpan="7" style={{ textAlign: 'center', padding: '32px', fontWeight: '600' }}>
-                          No scheduled items found.
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredAndSortedItems.map((it) => {
-                        const itMeeting = isMeeting(it);
-                        return (
-                          <tr key={it.id}>
-                            <td style={{ fontWeight: '700' }}>{it.title}</td>
-                            <td>
-                              <span className={`type-chip ${itMeeting ? 'meeting' : 'task'}`}>
-                                {itMeeting ? 'Meeting' : 'Task'}
-                              </span>
-                            </td>
-                            <td>
-                              <span className={`priority-chip ${(it.priority || 'medium').toLowerCase()}`}>
-                                {it.priority || 'Medium'}
-                              </span>
-                            </td>
-                            <td>
-                              <strong>{it.date}</strong>
-                              <div><small>{it.time}</small></div>
-                            </td>
-                            <td>
-                              {it.link ? (
-                                <a href={it.link.startsWith('http') ? it.link : `https://${it.link}`} target="_blank" rel="noreferrer" className="item-link-btn">
-                                  Join Link
-                                </a>
-                              ) : it.attendees ? (
-                                <small>{it.attendees}</small>
-                              ) : (
-                                '—'
-                              )}
-                            </td>
-                            <td>
-                              <span style={{ fontWeight: '700', color: it.status === 'Completed' ? 'var(--color-green)' : 'var(--color-black)' }}>
-                                {it.status === 'Completed' ? 'Completed' : 'Pending'}
-                              </span>
-                            </td>
-                            <td style={{ textAlign: 'right' }}>
-                              <div className="table-actions-cell">
-                                <button className="item-btn green compact" onClick={() => handleToggleStatus(it)}>
-                                  {it.status === 'Completed' ? 'Undo' : 'Done'}
-                                </button>
-                                {!itMeeting ? (
-                                  <button className="item-btn primary compact" onClick={() => handleMoveToTomorrow(it)}>
-                                    → Tomorrow
-                                  </button>
-                                ) : (
-                                  <button className="item-btn white compact" onClick={() => handleAddToGoogleCalendar(it)} title="Add to Google Calendar">
-                                    + GCal
-                                  </button>
-                                )}
-                                <button className="item-btn white compact" onClick={() => handleOpenEdit(it)}>
-                                  Edit
-                                </button>
-                                <button className="item-btn danger compact" onClick={() => handleDelete(it.id)}>
-                                  Delete
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
+              <TableView
+                filteredAndSortedItems={filteredAndSortedItems}
+                selectedDate={selectedDate}
+                handleOpenCreateTask={handleOpenCreateTask}
+                handleOpenCreateMeeting={handleOpenCreateMeeting}
+                handleOpenEdit={handleOpenEdit}
+                handleToggleStatus={handleToggleStatus}
+                handleMoveToTomorrow={handleMoveToTomorrow}
+                handleAddToGoogleCalendar={handleAddToGoogleCalendar}
+                handleDelete={handleDelete}
+                isMeeting={isMeeting}
+              />
             )}
 
-            {/* Cards View */}
             {viewMode === 'cards' && (
-              <div className="cards-view-grid">
-                {filteredAndSortedItems.length === 0 ? (
-                  <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', border: '1.5px solid var(--border-black)', borderRadius: '8px' }}>
-                    No items found matching the selected filters.
-                  </div>
-                ) : (
-                  filteredAndSortedItems.map((it) => {
-                    const itMeeting = isMeeting(it);
-                    return (
-                      <div key={it.id} className={`schedule-item ${itMeeting ? 'meeting-border' : 'task-border'}`}>
-                        <div className="item-tags-row">
-                          <span className={`type-chip ${itMeeting ? 'meeting' : 'task'}`}>
-                            {itMeeting ? 'Meeting' : 'Task'}
-                          </span>
-                          <span className={`priority-chip ${(it.priority || 'medium').toLowerCase()}`}>
-                            {it.priority || 'Medium'} Priority
-                          </span>
-                        </div>
-
-                        <h3 className="item-title">{it.title}</h3>
-                        {it.notes && <p className="item-desc">{it.notes}</p>}
-
-                        {it.attendees && (
-                          <div style={{ fontSize: '12px', fontWeight: '600', marginBottom: '8px' }}>
-                            <strong>Attendees:</strong> {it.attendees}
-                          </div>
-                        )}
-
-                        <div className="item-footer">
-                          <div className="item-footer-meta">
-                            <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>schedule</span>
-                            <span>{it.date} at {it.time}</span>
-                          </div>
-                          <div className="item-footer-actions">
-                            <div className="actions-primary">
-                              <button className="item-btn green" onClick={() => handleToggleStatus(it)}>
-                                {it.status === 'Completed' ? 'Undo' : 'Done'}
-                              </button>
-                              {itMeeting && it.link && (
-                                <a
-                                  href={it.link.startsWith('http') ? it.link : `https://${it.link}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="item-btn green join-link"
-                                >
-                                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>videocam</span>
-                                  <span>Join</span>
-                                </a>
-                              )}
-                              {!itMeeting && (
-                                <button className="item-btn primary" onClick={() => handleMoveToTomorrow(it)}>
-                                  → Tomorrow
-                                </button>
-                              )}
-                            </div>
-                            <div className="actions-utility">
-                              {itMeeting && (
-                                <>
-                                  <button className="item-btn white compact" onClick={() => handleAddToGoogleCalendar(it)} title="Add to Google Calendar">
-                                    + GCal
-                                  </button>
-                                  <button className="item-btn white compact" onClick={() => handleCopyMeetingInvite(it)} title="Copy Invite">
-                                    Copy
-                                  </button>
-                                  {it.notes && (
-                                    <button
-                                      className="item-btn white compact"
-                                      onClick={() => handleConvertNotesToTasks(it)}
-                                      title="Extract notes into tasks for tomorrow"
-                                    >
-                                      Notes → Tasks
-                                    </button>
-                                  )}
-                                </>
-                              )}
-                              <button className="item-btn white compact" onClick={() => handleOpenEdit(it)}>
-                                Edit
-                              </button>
-                              <button className="item-btn danger compact" onClick={() => handleDelete(it.id)}>
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+              <CardsView
+                filteredAndSortedItems={filteredAndSortedItems}
+                handleOpenEdit={handleOpenEdit}
+                handleToggleStatus={handleToggleStatus}
+                handleMoveToTomorrow={handleMoveToTomorrow}
+                handleAddToGoogleCalendar={handleAddToGoogleCalendar}
+                handleCopyMeetingInvite={handleCopyMeetingInvite}
+                handleConvertNotesToTasks={handleConvertNotesToTasks}
+                handleDelete={handleDelete}
+                isMeeting={isMeeting}
+              />
             )}
 
-            {/* Analytics View */}
             {viewMode === 'analytics' && (
-              <div className="analytics-card">
-                <h2 style={{ fontSize: '18px', fontWeight: '800', margin: '0 0 6px' }}>Productivity &amp; Meeting Analytics</h2>
-                <p style={{ fontSize: '13px', margin: 0, fontWeight: '600' }}>
-                  Performance breakdown for scheduled tasks and executive meetings.
-                </p>
-
-                <div className="analytics-grid">
-                  <div className="analytics-metric-box">
-                    <span style={{ fontSize: '13px', fontWeight: '700' }}>Task Completion Rate</span>
-                    <div className="analytics-val" style={{ color: 'var(--color-blue)' }}>{completionRate}%</div>
-                    <div className="progress-bar-bg">
-                      <div className="progress-bar-fill" style={{ width: `${completionRate}%`, background: 'var(--color-blue)' }}></div>
-                    </div>
-                  </div>
-
-                  <div className="analytics-metric-box">
-                    <span style={{ fontSize: '13px', fontWeight: '700' }}>Scheduled Meetings</span>
-                    <div className="analytics-val" style={{ color: 'var(--color-green)' }}>{meetingCount} sessions</div>
-                    <div className="progress-bar-bg">
-                      <div
-                        className="progress-bar-fill"
-                        style={{ width: `${totalCount > 0 ? (meetingCount / totalCount) * 100 : 0}%`, background: 'var(--color-green)' }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  <div className="analytics-metric-box">
-                    <span style={{ fontSize: '13px', fontWeight: '700' }}>High Priority Items</span>
-                    <div className="analytics-val" style={{ color: 'var(--color-red)' }}>{highPriorityCount} urgent</div>
-                    <div className="progress-bar-bg">
-                      <div
-                        className="progress-bar-fill"
-                        style={{ width: `${totalCount > 0 ? (highPriorityCount / totalCount) * 100 : 0}%`, background: 'var(--color-red)' }}
-                      ></div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 90-Day Activity Heatmap Card */}
-                <div className="heatmap-section">
-                  <div className="heatmap-header">
-                    <div>
-                      <h3 className="heatmap-title">90-Day Consistency Heatmap</h3>
-                      <p className="heatmap-subtitle">Completed tasks and scheduled meetings over the last 3 months</p>
-                    </div>
-                    <div className="heatmap-stats">
-                      <div className="heatmap-stat-chip">
-                        <span className="stat-label">Current Streak</span>
-                        <span className="stat-val">{activeStreak} Days</span>
-                      </div>
-                      <div className="heatmap-stat-chip">
-                        <span className="stat-label">90-Day Output</span>
-                        <span className="stat-val">{heatmapTotalActions} Actions</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="heatmap-grid">
-                    {heatmapDays.map((d) => {
-                      let levelClass = 'level-0';
-                      if (d.score === 1) levelClass = 'level-1';
-                      else if (d.score === 2) levelClass = 'level-2';
-                      else if (d.score === 3) levelClass = 'level-3';
-                      else if (d.score >= 4) levelClass = 'level-4';
-
-                      return (
-                        <div
-                          key={d.date}
-                          className={`heatmap-cell ${levelClass} ${selectedDate === d.date ? 'selected' : ''}`}
-                          title={`${d.date}: ${d.completedCount} completed, ${d.meetingsCount} meetings`}
-                          onClick={() => {
-                            setSelectedDate(d.date);
-                            showToast(`Selected date: ${d.date}`);
-                          }}
-                        ></div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="heatmap-footer">
-                    <span style={{ fontSize: '11px', color: '#64748b', fontWeight: '700' }}>
-                      Click any cell to inspect schedule for that day
-                    </span>
-                    <div className="heatmap-legend">
-                      <span>Less</span>
-                      <div className="legend-cell level-0"></div>
-                      <div className="legend-cell level-1"></div>
-                      <div className="legend-cell level-2"></div>
-                      <div className="legend-cell level-3"></div>
-                      <div className="legend-cell level-4"></div>
-                      <span>More</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <AnalyticsView
+                completionRate={completionRate}
+                meetingCount={meetingCount}
+                totalCount={totalCount}
+                highPriorityCount={highPriorityCount}
+                activeStreak={activeStreak}
+                heatmapTotalActions={heatmapTotalActions}
+                heatmapDays={heatmapDays}
+                selectedDate={selectedDate}
+                setSelectedDate={setSelectedDate}
+                showToast={showToast}
+              />
             )}
           </div>
 
           {/* Right Column (Day Schedule Sidebar) */}
           <div>
-            <div className="schedule-card">
-              <div className="schedule-card-header">
-                <div>
-                  <span style={{ fontSize: '12px', fontWeight: '700' }}>Schedule for:</span>
-                  <h3 className="schedule-date-title">{selectedDate}</h3>
-                </div>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <button className="cal-nav-btn" onClick={() => handleOpenCreateTask(selectedDate)} title="Add Task">
-                    <span className="material-symbols-outlined" style={{ color: 'var(--color-blue)' }}>add</span>
-                  </button>
-                  <button className="cal-nav-btn" onClick={() => handleOpenCreateMeeting(selectedDate)} title="Schedule Meeting">
-                    <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>event</span>
-                  </button>
-                </div>
-              </div>
-
-              <div style={{ fontSize: '12px', fontWeight: '700', marginBottom: '12px' }}>
-                {dayScheduleItems.length} item(s) scheduled
-              </div>
-
-              {dayScheduleItems.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '32px 16px' }}>
-                  <span className="material-symbols-outlined" style={{ fontSize: '32px', marginBottom: '8px' }}>
-                    event_busy
-                  </span>
-                  <p style={{ margin: '0 0 14px', fontSize: '13px', fontWeight: '700' }}>Nothing scheduled for this date.</p>
-                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                    <button className="btn-blue" onClick={() => handleOpenCreateTask(selectedDate)}>
-                      + Task
-                    </button>
-                    <button className="btn-green" onClick={() => handleOpenCreateMeeting(selectedDate)}>
-                      + Meeting
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  {dayScheduleItems.map((it) => {
-                    const itMeeting = isMeeting(it);
-                    return (
-                      <div key={it.id} className={`schedule-item ${itMeeting ? 'meeting-border' : 'task-border'}`}>
-                        <div className="item-tags-row">
-                          <span className={`type-chip ${itMeeting ? 'meeting' : 'task'}`}>
-                            {itMeeting ? 'Meeting' : 'Task'}
-                          </span>
-                          <span className={`priority-chip ${(it.priority || 'medium').toLowerCase()}`}>
-                            {it.priority || 'Medium'} Priority
-                          </span>
-                        </div>
-
-                        <h4 className="item-title">{it.title}</h4>
-                        {it.notes && <p className="item-desc">{it.notes}</p>}
-
-                        {it.attendees && (
-                          <div style={{ fontSize: '11px', fontWeight: '700', marginBottom: '4px' }}>
-                            {it.attendees}
-                          </div>
-                        )}
-
-                        <div className="item-footer">
-                          <div className="item-footer-meta">
-                            <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>schedule</span>
-                            <span>{it.time}</span>
-                          </div>
-                          <div className="item-footer-actions">
-                            <div className="actions-primary">
-                              <button className="item-btn green" onClick={() => handleToggleStatus(it)}>
-                                {it.status === 'Completed' ? 'Undo' : 'Done'}
-                              </button>
-                              {itMeeting && it.link && (
-                                <a
-                                  href={it.link.startsWith('http') ? it.link : `https://${it.link}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="item-btn green join-link"
-                                >
-                                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>videocam</span>
-                                  <span>Join</span>
-                                </a>
-                              )}
-                              {!itMeeting && (
-                                <button className="item-btn primary" onClick={() => handleMoveToTomorrow(it)}>
-                                  → Tomorrow
-                                </button>
-                              )}
-                            </div>
-                            <div className="actions-utility">
-                              {itMeeting && (
-                                <>
-                                  <button className="item-btn white compact" onClick={() => handleAddToGoogleCalendar(it)} title="Add to Google Calendar">
-                                    + GCal
-                                  </button>
-                                  <button className="item-btn white compact" onClick={() => handleCopyMeetingInvite(it)} title="Copy Invite">
-                                    Copy
-                                  </button>
-                                  {it.notes && (
-                                    <button
-                                      className="item-btn white compact"
-                                      onClick={() => handleConvertNotesToTasks(it)}
-                                      title="Extract notes into tasks for tomorrow"
-                                    >
-                                      Notes → Tasks
-                                    </button>
-                                  )}
-                                </>
-                              )}
-                              <button className="item-btn white compact" onClick={() => handleOpenEdit(it)}>
-                                Edit
-                              </button>
-                              <button className="item-btn danger compact" onClick={() => handleDelete(it.id)}>
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            <DayScheduleSidebar
+              selectedDate={selectedDate}
+              handleOpenCreateTask={handleOpenCreateTask}
+              handleOpenCreateMeeting={handleOpenCreateMeeting}
+              dayScheduleItems={dayScheduleItems}
+              isMeeting={isMeeting}
+              handleToggleStatus={handleToggleStatus}
+              handleMoveToTomorrow={handleMoveToTomorrow}
+              handleAddToGoogleCalendar={handleAddToGoogleCalendar}
+              handleCopyMeetingInvite={handleCopyMeetingInvite}
+              handleConvertNotesToTasks={handleConvertNotesToTasks}
+              handleOpenEdit={handleOpenEdit}
+              handleDelete={handleDelete}
+            />
           </div>
         </div>
       </main>
 
-      {/* Slide-out Side Drawer (Coming from right) */}
-      {isDrawerOpen && (
-        <div className="drawer-overlay" onClick={handleCloseDrawer}>
-          <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="drawer-header">
-              <h3>
-                {editingId
-                  ? drawerType === 'meeting' ? 'Edit Meeting Details' : 'Edit Task Details'
-                  : drawerType === 'meeting' ? 'Schedule Meeting' : 'Add New Task'}
-              </h3>
-              <button className="close-drawer-btn" onClick={handleCloseDrawer}>
-                &times;
-              </button>
-            </div>
-
-            <form onSubmit={handleSubmit}>
-              <div className="form-field">
-                <label>{drawerType === 'meeting' ? 'Meeting Subject *' : 'Task Title *'}</label>
-                <input
-                  type="text"
-                  required
-                  placeholder={drawerType === 'meeting' ? 'e.g., Executive Strategy Alignment' : 'e.g., Complete Budget Analysis'}
-                  value={formData.title}
-                  onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                />
-              </div>
-
-              <div className="form-row-2">
-                <div className="form-field">
-                  <label>Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={formData.date}
-                    onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                  />
-                </div>
-
-                <div className="form-field">
-                  <label>{drawerType === 'meeting' ? 'Time Slot *' : 'Due Time *'}</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g., 10:00 AM, 02:00 PM - 03:30 PM"
-                    value={formData.time}
-                    onChange={(e) => setFormData({ ...formData, time: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="form-row-2">
-                <div className="form-field">
-                  <label>Priority *</label>
-                  <select
-                    value={formData.priority}
-                    onChange={(e) => setFormData({ ...formData, priority: e.target.value })}
-                  >
-                    <option value="High">High Priority (Red)</option>
-                    <option value="Medium">Medium Priority (Blue)</option>
-                    <option value="Low">Low Priority (Black)</option>
-                  </select>
-                </div>
-
-                <div className="form-field">
-                  <label>Status</label>
-                  <select
-                    value={formData.status}
-                    onChange={(e) => setFormData({ ...formData, status: e.target.value })}
-                  >
-                    <option value="Pending">Pending</option>
-                    <option value="Completed">Completed</option>
-                  </select>
-                </div>
-              </div>
-
-              {drawerType === 'meeting' && (
-                <>
-                  <div className="form-field">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <label>Meeting Link (Google Meet / Zoom)</label>
-                      <button
-                        type="button"
-                        className="btn-link-detect"
-                        onClick={handleAutoDetectCallLink}
-                        title="Grab meeting URL from active browser tab or clipboard"
-                      >
-                        Grab Active Tab / Link
-                      </button>
-                    </div>
-                    <input
-                      type="text"
-                      placeholder="https://meet.google.com/..."
-                      value={formData.link}
-                      onChange={(e) => setFormData({ ...formData, link: e.target.value })}
-                    />
-                  </div>
-
-                  <div className="form-field">
-                    <label>Attendees</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. dev@company.com, client@partner.org"
-                      value={formData.attendees}
-                      onChange={(e) => setFormData({ ...formData, attendees: e.target.value })}
-                    />
-                    <div className="form-field-hint">
-                      Enter email addresses separated by commas to send auto-notifications
-                    </div>
-                  </div>
-
-                  <div className="form-field email-invite-group">
-                    <label className="checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={formData.sendEmailInvites !== false}
-                        onChange={(e) => setFormData({ ...formData, sendEmailInvites: e.target.checked })}
-                      />
-                      <span>Send automated email invitations & .ics calendar invites</span>
-                    </label>
-                  </div>
-                </>
-              )}
-
-              <div className="form-field">
-                <label>{drawerType === 'meeting' ? 'Agenda & Notes' : 'Description / Notes'}</label>
-                <textarea
-                  rows="4"
-                  placeholder="Add details, steps, or discussion agenda..."
-                  value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                ></textarea>
-              </div>
-
-              <div className="drawer-footer">
-                <button type="button" className="btn-cancel" onClick={handleCloseDrawer}>
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={drawerType === 'meeting' ? 'btn-green' : 'btn-blue'}
-                >
-                  {editingId
-                    ? 'Save Changes'
-                    : drawerType === 'meeting'
-                    ? 'Schedule Meeting'
-                    : 'Save Task'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* Slide-out Side Drawer */}
+      <ItemDrawer
+        isOpen={isDrawerOpen}
+        onClose={handleCloseDrawer}
+        drawerType={drawerType}
+        editingId={editingId}
+        formData={formData}
+        setFormData={setFormData}
+        onSubmit={handleSubmit}
+        onAutoDetectCallLink={handleAutoDetectCallLink}
+      />
 
       {/* Command Palette Modal */}
-      {isPaletteOpen && (
-        <div className="palette-overlay" onClick={() => setIsPaletteOpen(false)}>
-          <div className="palette-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="palette-search-row">
-              <span className="material-symbols-outlined">search</span>
-              <input
-                type="text"
-                autoFocus
-                className="palette-input"
-                placeholder="Type a command or search items... (Esc to close)"
-                value={paletteQuery}
-                onChange={(e) => setPaletteQuery(e.target.value)}
-              />
-              <span className="kbd-hint">Esc</span>
-            </div>
-
-            <div className="palette-results">
-              {filteredCommands.length > 0 && (
-                <div className="palette-section">
-                  <div className="palette-section-title">COMMANDS</div>
-                  {filteredCommands.map((cmd) => (
-                    <div
-                      key={cmd.id}
-                      className="palette-row"
-                      onClick={cmd.action}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>{cmd.icon}</span>
-                        <span style={{ fontWeight: '700' }}>{cmd.title}</span>
-                      </div>
-                      <span className="palette-jump-hint">Execute</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {matchingPaletteItems.length > 0 && (
-                <div className="palette-section">
-                  <div className="palette-section-title">MATCHING ITEMS</div>
-                  {matchingPaletteItems.map((it) => {
-                    const itMeeting = isMeeting(it);
-                    return (
-                      <div
-                        key={it.id}
-                        className="palette-row"
-                        onClick={() => {
-                          setSelectedDate(it.date);
-                          handleOpenEdit(it);
-                          setIsPaletteOpen(false);
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span className={`type-chip ${itMeeting ? 'meeting' : 'task'}`}>
-                            {itMeeting ? 'Meeting' : 'Task'}
-                          </span>
-                          <span style={{ fontWeight: '700' }}>{it.title}</span>
-                        </div>
-                        <span style={{ fontSize: '11px', fontWeight: '700', color: '#64748b' }}>
-                          {it.date} at {it.time}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {filteredCommands.length === 0 && matchingPaletteItems.length === 0 && (
-                <div className="palette-empty">No commands or items found matching &quot;{paletteQuery}&quot;</div>
-              )}
-            </div>
-
-            <div className="palette-footer">
-              <span>Use <strong>Ctrl+K</strong> anywhere to toggle</span>
-              <span>PCS Meet Manager Command Center</span>
-            </div>
-          </div>
-        </div>
-      )}
+      <CommandPalette
+        isOpen={isPaletteOpen}
+        onClose={() => setIsPaletteOpen(false)}
+        paletteQuery={paletteQuery}
+        setPaletteQuery={setPaletteQuery}
+        filteredCommands={filteredCommands}
+        matchingPaletteItems={matchingPaletteItems}
+        isMeeting={isMeeting}
+        setSelectedDate={setSelectedDate}
+        handleOpenEdit={handleOpenEdit}
+      />
 
       {/* Google Meet Professional Calling Stage & Floating Controls */}
-      {activeCallRoom && (
-        <div className={`google-meet-stage ${isCallMinimized ? 'meet-pip-mode' : 'meet-stage-fullscreen'} ${meetingDrawerTab ? 'with-drawer' : ''}`}>
-          {isCallMinimized ? (
-            /* Minimized Picture-in-Picture Mode (Multitask in Dashboard) */
-            <div className="meet-pip-container">
-              <div className="meet-pip-header">
-                <div className="meet-pip-title">
-                  <span className="live-call-indicator"></span>
-                  <span className="meet-pip-room">#{activeCallRoom}</span>
-                  <span className="meet-pip-timer">{formatMeetingDuration(callDuration)}</span>
-                  <span className="meet-pip-participants-badge">{connectedPeers.length + 1}</span>
-                </div>
-                <div className="meet-pip-actions">
-                  <button
-                    type="button"
-                    className="meet-pip-btn"
-                    onClick={() => setIsCallMinimized(false)}
-                    title="Expand to Full Google Meet Stage"
-                  >
-                    <span className="material-symbols-outlined">open_in_full</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="meet-pip-btn pip-close-btn"
-                    onClick={handleEndCall}
-                    title="End Call"
-                  >
-                    <span className="material-symbols-outlined">call_end</span>
-                  </button>
-                </div>
-              </div>
-              <div className="meet-pip-video-wrap">
-                {(() => {
-                  const activePipPeer = connectedPeers.find((p) => speakingPeers.has(p.peerId)) || connectedPeers[0];
-                  if (activePipPeer) {
-                    if (activePipPeer.isVideoOff || !activePipPeer.stream) {
-                      return (
-                        <div className="meet-pip-avatar">
-                          <span>{(activePipPeer.name || 'P').charAt(0).toUpperCase()}</span>
-                        </div>
-                      );
-                    }
-                    return (
-                      <video
-                        ref={(el) => {
-                          if (el && activePipPeer.stream && el.srcObject !== activePipPeer.stream) {
-                            el.srcObject = activePipPeer.stream;
-                            el.play().catch(() => {});
-                          }
-                        }}
-                        autoPlay
-                        playsInline
-                        className="meet-pip-video"
-                      />
-                    );
-                  }
-                  if (isVideoOff) {
-                    return (
-                      <div className="meet-pip-avatar">
-                        <span>{guestName ? guestName.charAt(0).toUpperCase() : 'Y'}</span>
-                      </div>
-                    );
-                  }
-                  return (
-                    <video
-                      ref={(el) => {
-                        localVideoRef.current = el;
-                        const s = screenStreamRef.current || localStreamRef.current;
-                        if (el && s && el.srcObject !== s) {
-                          el.srcObject = s;
-                        }
-                      }}
-                      autoPlay
-                      playsInline
-                      muted
-                      className={`meet-pip-video ${isScreenSharing ? '' : 'local-mirror'}`}
-                    />
-                  );
-                })()}
-                {connectedPeers.length > 0 && (
-                  <div className="meet-pip-thumb">
-                    {isVideoOff ? (
-                      <div className="meet-pip-thumb-avatar">Y</div>
-                    ) : (
-                      <video
-                        ref={(el) => {
-                          localVideoRef.current = el;
-                          const s = screenStreamRef.current || localStreamRef.current;
-                          if (el && s && el.srcObject !== s) {
-                            el.srcObject = s;
-                          }
-                        }}
-                        autoPlay
-                        playsInline
-                        muted
-                        className={`meet-pip-thumb-video ${isScreenSharing ? '' : 'local-mirror'}`}
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-              <div className="meet-pip-controls">
-                <button
-                  type="button"
-                  className={`meet-pip-ctl-btn ${isAudioMuted ? 'muted' : ''}`}
-                  onClick={handleToggleAudio}
-                  title={isAudioMuted ? 'Unmute' : 'Mute'}
-                >
-                  <span className="material-symbols-outlined">{isAudioMuted ? 'mic_off' : 'mic'}</span>
-                </button>
-                <button
-                  type="button"
-                  className={`meet-pip-ctl-btn ${isVideoOff ? 'muted' : ''}`}
-                  onClick={handleToggleVideo}
-                  title={isVideoOff ? 'Start Camera' : 'Stop Camera'}
-                >
-                  <span className="material-symbols-outlined">{isVideoOff ? 'videocam_off' : 'videocam'}</span>
-                </button>
-                <button
-                  type="button"
-                  className="meet-pip-ctl-btn expand-btn"
-                  onClick={() => setIsCallMinimized(false)}
-                  title="Expand to Full Google Meet Stage"
-                >
-                  <span className="material-symbols-outlined">fullscreen</span>
-                </button>
-                <button
-                  type="button"
-                  className="meet-pip-ctl-btn end-btn"
-                  onClick={handleEndCall}
-                  title="Leave Call"
-                >
-                  <span className="material-symbols-outlined">call_end</span>
-                </button>
-              </div>
-            </div>
-          ) : (
-            /* Full Immersive Google Meet Stage */
-            <div className="meet-stage-inner">
-              {/* Top Header Bar */}
-              <header className="meet-top-bar">
-                <div className="meet-top-left">
-                  <div className="meet-brand-chip">
-                    <span className="material-symbols-outlined brand-meet-icon">video_camera_front</span>
-                    <span className="meet-room-code-tag">#{activeCallRoom}</span>
-                  </div>
-                  <div className="meet-clock-chip">
-                    <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>schedule</span>
-                    <span>{formatMeetingDuration(callDuration)}</span>
-                  </div>
-                  <div className={`meet-quality-badge ${callQuality}`} title={`Network Status: ${callQuality}`}>
-                    <span className="quality-dot"></span>
-                    <span>{callQuality === 'stable' ? 'P2P Direct' : callQuality === 'relayed' ? 'Relay' : 'Connecting'}</span>
-                  </div>
-                  <div className="meet-e2e-badge" title="WebRTC End-to-End Direct Connection">
-                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>lock</span>
-                    <span>Direct P2P</span>
-                  </div>
-                </div>
-
-                <div className="meet-top-right">
-                  <button
-                    type="button"
-                    className={`meet-top-btn ${meetingLayout === 'spotlight' ? 'active' : ''}`}
-                    onClick={() => {
-                      setMeetingLayout((prev) => (prev === 'grid' ? 'spotlight' : 'grid'));
-                      if (meetingLayout === 'grid') {
-                        setPinnedParticipant(connectedPeers.length > 0 ? connectedPeers[0].peerId : 'local');
-                      } else {
-                        setPinnedParticipant(null);
-                      }
-                    }}
-                    title={meetingLayout === 'grid' ? 'Switch to Spotlight View' : 'Switch to Grid View'}
-                  >
-                    <span className="material-symbols-outlined">
-                      {meetingLayout === 'grid' ? 'featured_video' : 'grid_view'}
-                    </span>
-                    <span>{meetingLayout === 'grid' ? 'Spotlight' : 'Grid'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="meet-top-btn"
-                    onClick={() => setIsCallMinimized(true)}
-                    title="Minimize to Picture-in-Picture (Continue in Dashboard)"
-                  >
-                    <span className="material-symbols-outlined">picture_in_picture_alt</span>
-                    <span>Minimize</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="meet-top-btn icon-only"
-                    onClick={handleToggleFullscreen}
-                    title={isCallFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-                  >
-                    <span className="material-symbols-outlined">
-                      {isCallFullscreen ? 'fullscreen_exit' : 'fullscreen'}
-                    </span>
-                  </button>
-                </div>
-              </header>
-
-              {/* Center Stage Body */}
-              <div className="meet-stage-body">
-                {(() => {
-                  const totalCallCount = connectedPeers.length + 1;
-                  const gridCountClass = totalCallCount === 1
-                    ? 'grid-count-1'
-                    : totalCallCount === 2
-                    ? 'grid-count-2'
-                    : totalCallCount <= 4
-                    ? 'grid-count-4'
-                    : totalCallCount <= 6
-                    ? 'grid-count-6'
-                    : totalCallCount <= 9
-                    ? 'grid-count-9'
-                    : 'grid-count-many';
-
-                  const renderLocalTile = (isSpotHero = false) => (
-                    <div
-                      key="local-user-tile"
-                      className={`meet-video-tile local-tile ${isLocalSpeaking ? 'speaking' : ''} ${isSpotHero ? 'is-pinned-hero' : ''}`}
-                    >
-                      {isVideoOff ? (
-                        <div className="meet-avatar-placeholder">
-                          <div className={`meet-avatar-circle local-avatar-circle ${isLocalSpeaking ? 'pulse-speaking' : ''}`}>
-                            <span>{guestName ? guestName.charAt(0).toUpperCase() : (isHostInCall ? 'H' : 'Y')}</span>
-                          </div>
-                          <div className="meet-avatar-label">Camera is off</div>
-                        </div>
-                      ) : (
-                        <video
-                          ref={(el) => {
-                            localVideoRef.current = el;
-                            const s = screenStreamRef.current || localStreamRef.current;
-                            if (el && s && el.srcObject !== s) {
-                              el.srcObject = s;
-                            }
-                          }}
-                          autoPlay
-                          playsInline
-                          muted
-                          className={`meet-video-element ${isScreenSharing ? '' : 'local-mirror'}`}
-                        />
-                      )}
-                      <div className="meet-name-pill">
-                        <span className={`mic-badge ${isAudioMuted ? 'muted' : ''}`}>
-                          <span className="material-symbols-outlined">
-                            {isAudioMuted ? 'mic_off' : 'mic'}
-                          </span>
-                        </span>
-                        <span className="participant-title">
-                          You {isHostInCall ? '(Host)' : ''}
-                        </span>
-                        {isHandRaised && (
-                          <span className="raised-hand-badge">
-                            <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>
-                            <span>You raised hand</span>
-                          </span>
-                        )}
-                      </div>
-                      <button
-                        type="button"
-                        className="meet-tile-pin-btn"
-                        onClick={() => {
-                          if (pinnedParticipant === 'local') {
-                            setPinnedParticipant(null);
-                            setMeetingLayout('grid');
-                          } else {
-                            setPinnedParticipant('local');
-                            setMeetingLayout('spotlight');
-                          }
-                        }}
-                        title={pinnedParticipant === 'local' ? 'Unpin' : 'Pin to spotlight'}
-                      >
-                        <span className="material-symbols-outlined">
-                          {pinnedParticipant === 'local' ? 'keep_off' : 'push_pin'}
-                        </span>
-                      </button>
-                    </div>
-                  );
-
-                  if (meetingLayout === 'spotlight') {
-                    const pinnedPeer = pinnedParticipant === 'local' ? null : (connectedPeers.find((p) => p.peerId === pinnedParticipant) || connectedPeers[0]);
-                    const isLocalHero = pinnedParticipant === 'local' || (!pinnedPeer && connectedPeers.length === 0);
-
-                    return (
-                      <div className="meet-video-canvas spotlight-layout">
-                        <div className="meet-spotlight-hero">
-                          {isLocalHero ? (
-                            renderLocalTile(true)
-                          ) : (
-                            <RemoteParticipantTile
-                              peer={pinnedPeer}
-                              isSpeaking={speakingPeers.has(pinnedPeer.peerId)}
-                              isPinned={true}
-                              onPin={() => {
-                                setPinnedParticipant(null);
-                                setMeetingLayout('grid');
-                              }}
-                            />
-                          )}
-                        </div>
-                        <div className="meet-filmstrip">
-                          {!isLocalHero && (
-                            <div className="filmstrip-tile">
-                              {renderLocalTile(false)}
-                            </div>
-                          )}
-                          {connectedPeers
-                            .filter((p) => isLocalHero || p.peerId !== pinnedPeer?.peerId)
-                            .map((p) => (
-                              <div key={p.peerId} className="filmstrip-tile">
-                                <RemoteParticipantTile
-                                  peer={p}
-                                  isSpeaking={speakingPeers.has(p.peerId)}
-                                  isPinned={false}
-                                  onPin={() => {
-                                    setPinnedParticipant(p.peerId);
-                                    setMeetingLayout('spotlight');
-                                  }}
-                                />
-                              </div>
-                            ))}
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div className={`meet-video-canvas grid-mode ${gridCountClass}`}>
-                      {renderLocalTile(false)}
-                      {connectedPeers.map((peer) => (
-                        <RemoteParticipantTile
-                          key={peer.peerId}
-                          peer={peer}
-                          isSpeaking={speakingPeers.has(peer.peerId)}
-                          isPinned={false}
-                          onPin={() => {
-                            setPinnedParticipant(peer.peerId);
-                            setMeetingLayout('spotlight');
-                          }}
-                        />
-                      ))}
-                      {connectedPeers.length === 0 && (
-                        <div className="meet-video-tile meet-waiting-tile">
-                          <div className="meet-waiting-hud">
-                            <div className="meet-waiting-pulse-avatar">
-                              <span className="material-symbols-outlined">group_add</span>
-                            </div>
-                            <h3 className="meet-waiting-title">Ready for your meeting</h3>
-                            <p className="meet-waiting-desc">
-                              {callStatusText || 'Waiting for other participants to join the call...'}
-                            </p>
-                            <div className="meet-waiting-actions">
-                              <button
-                                type="button"
-                                className="meet-waiting-copy-btn"
-                                onClick={handleCopyGuestLink}
-                              >
-                                <span className="material-symbols-outlined">content_copy</span>
-                                <span>Copy Joining Link</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* Pending Knock Banner for Host */}
-                {pendingKnocks.length > 0 && isHostInCall && (
-                  <div className="meet-knocking-alert-strip">
-                    <span className="material-symbols-outlined alert-icon">doorbell</span>
-                    <div className="knocking-text">
-                      <strong>{pendingKnocks[0].name}</strong> ({pendingKnocks[0].officeId})
-                      {pendingKnocks.length > 1 ? ` and ${pendingKnocks.length - 1} other${pendingKnocks.length > 2 ? 's' : ''}` : ''} wants to join this meeting.
-                    </div>
-                    <div className="knocking-btns">
-                      <button
-                        type="button"
-                        className="btn-admit"
-                        onClick={() => handleAdmitKnockGuest(pendingKnocks[0].id)}
-                      >
-                        Admit
-                      </button>
-                      {pendingKnocks.length > 1 && (
-                        <button
-                          type="button"
-                          className="btn-admit-all"
-                          onClick={() => {
-                            pendingKnocks.forEach((k) => handleAdmitKnockGuest(k.id));
-                          }}
-                        >
-                          Admit All ({pendingKnocks.length})
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="btn-deny"
-                        onClick={() => handleDenyKnockGuest(pendingKnocks[0].id)}
-                      >
-                        Deny
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Google Meet Floating Bottom Pill Bar */}
-                <footer className="meet-bottom-pill-dock">
-                  {/* Audio Toggle */}
-                  <button
-                    type="button"
-                    className={`meet-dock-btn ${isAudioMuted ? 'btn-danger' : ''}`}
-                    onClick={handleToggleAudio}
-                    title={isAudioMuted ? 'Turn on microphone (Ctrl+D)' : 'Turn off microphone (Ctrl+D)'}
-                  >
-                    <span className="material-symbols-outlined">
-                      {isAudioMuted ? 'mic_off' : 'mic'}
-                    </span>
-                  </button>
-
-                  {/* Video Toggle */}
-                  <button
-                    type="button"
-                    className={`meet-dock-btn ${isVideoOff ? 'btn-danger' : ''}`}
-                    onClick={handleToggleVideo}
-                    title={isVideoOff ? 'Turn on camera (Ctrl+E)' : 'Turn off camera (Ctrl+E)'}
-                  >
-                    <span className="material-symbols-outlined">
-                      {isVideoOff ? 'videocam_off' : 'videocam'}
-                    </span>
-                  </button>
-
-                  {/* Screen Share */}
-                  <button
-                    type="button"
-                    className={`meet-dock-btn ${isScreenSharing ? 'btn-active-blue' : ''}`}
-                    onClick={handleToggleScreenShare}
-                    title={isScreenSharing ? 'Stop presenting' : 'Present now / Share screen'}
-                  >
-                    <span className="material-symbols-outlined">
-                      {isScreenSharing ? 'stop_screen_share' : 'present_to_all'}
-                    </span>
-                  </button>
-
-                  {/* Raise Hand */}
-                  <button
-                    type="button"
-                    className={`meet-dock-btn ${isHandRaised ? 'btn-active-amber' : ''}`}
-                    onClick={handleToggleRaiseHand}
-                    title={isHandRaised ? 'Lower hand' : 'Raise hand'}
-                  >
-                    <span className="material-symbols-outlined">front_hand</span>
-                  </button>
-
-                  {/* In-Call Chat */}
-                  <button
-                    type="button"
-                    className={`meet-dock-btn ${meetingDrawerTab === 'chat' ? 'btn-active-blue' : ''}`}
-                    onClick={() => {
-                      setMeetingDrawerTab((prev) => (prev === 'chat' ? null : 'chat'));
-                      handleLoadRoomMessages(activeCallRoom);
-                    }}
-                    title="In-call messages"
-                  >
-                    <span className="material-symbols-outlined">chat</span>
-                    {chatMessages.length > 0 && (
-                      <span className="dock-badge">{chatMessages.length}</span>
-                    )}
-                  </button>
-
-                  {/* People */}
-                  <button
-                    type="button"
-                    className={`meet-dock-btn ${meetingDrawerTab === 'people' ? 'btn-active-blue' : ''}`}
-                    onClick={() => setMeetingDrawerTab((prev) => (prev === 'people' ? null : 'people'))}
-                    title="People"
-                  >
-                    <span className="material-symbols-outlined">group</span>
-                    <span className="dock-badge">{connectedPeers.length + 1}</span>
-                  </button>
-
-                  {/* Meeting Info */}
-                  <button
-                    type="button"
-                    className={`meet-dock-btn ${meetingDrawerTab === 'info' ? 'btn-active-blue' : ''}`}
-                    onClick={() => setMeetingDrawerTab((prev) => (prev === 'info' ? null : 'info'))}
-                    title="Meeting details"
-                  >
-                    <span className="material-symbols-outlined">info</span>
-                  </button>
-
-                  {/* End / Leave Call */}
-                  <button
-                    type="button"
-                    className="meet-dock-btn meet-end-btn"
-                    onClick={handleEndCall}
-                    title="Leave call"
-                  >
-                    <span className="material-symbols-outlined">call_end</span>
-                  </button>
-                </footer>
-
-                {/* Right Slide-Out Side Drawer */}
-                {meetingDrawerTab && (
-                  <aside className="meet-side-drawer">
-                    <div className="meet-drawer-header">
-                      <h3 className="meet-drawer-title">
-                        {meetingDrawerTab === 'chat' && 'In-call messages'}
-                        {meetingDrawerTab === 'people' && `People (${connectedPeers.length + 1})`}
-                        {meetingDrawerTab === 'info' && 'Meeting details'}
-                      </h3>
-                      <div className="meet-drawer-hdr-actions">
-                        <div className="meet-drawer-tab-switch">
-                          <button
-                            type="button"
-                            className={`drawer-tab-btn ${meetingDrawerTab === 'chat' ? 'active' : ''}`}
-                            onClick={() => setMeetingDrawerTab('chat')}
-                            title="Messages"
-                          >
-                            <span className="material-symbols-outlined">chat</span>
-                          </button>
-                          <button
-                            type="button"
-                            className={`drawer-tab-btn ${meetingDrawerTab === 'people' ? 'active' : ''}`}
-                            onClick={() => setMeetingDrawerTab('people')}
-                            title="People"
-                          >
-                            <span className="material-symbols-outlined">group</span>
-                          </button>
-                          <button
-                            type="button"
-                            className={`drawer-tab-btn ${meetingDrawerTab === 'info' ? 'active' : ''}`}
-                            onClick={() => setMeetingDrawerTab('info')}
-                            title="Details"
-                          >
-                            <span className="material-symbols-outlined">info</span>
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          className="meet-drawer-close-btn"
-                          onClick={() => setMeetingDrawerTab(null)}
-                          title="Close side panel"
-                        >
-                          <span className="material-symbols-outlined">close</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Drawer Content */}
-                    <div className="meet-drawer-body">
-                      {/* Chat Tab */}
-                      {meetingDrawerTab === 'chat' && (
-                        <div className="meet-drawer-chat-wrap">
-                          <div className="meet-chat-disclaimer">
-                            <span className="material-symbols-outlined">info</span>
-                            <span>Messages can be seen by participants in this call and are saved for this room.</span>
-                          </div>
-
-                          <div className="meet-drawer-chat-scroll">
-                            {chatMessages.length === 0 ? (
-                              <div className="meet-chat-empty">
-                                <span className="material-symbols-outlined empty-icon">forum</span>
-                                <p>No messages yet. Send a message to start chatting in the meeting!</p>
-                              </div>
-                            ) : (
-                              chatMessages.map((msg, idx) => {
-                                const isMe = msg.sender_name === (guestName.trim() || 'Colleague') || msg.sender_name === 'Host';
-                                return (
-                                  <div key={msg.id || idx} className={`meet-chat-msg-row ${isMe ? 'mine' : 'theirs'}`}>
-                                    <div className="meet-chat-msg-avatar">
-                                      {(msg.sender_name || 'U').charAt(0).toUpperCase()}
-                                    </div>
-                                    <div className="meet-chat-msg-bubble">
-                                      <div className="meet-chat-msg-meta">
-                                        <span className="sender">{msg.sender_name || 'User'}</span>
-                                        <span className="time">
-                                          {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                                        </span>
-                                      </div>
-                                      {msg.reply_to_content && (
-                                        <div className="meet-chat-reply-quote">
-                                          <strong>{msg.reply_to_sender || 'Replying to'}:</strong> {msg.reply_to_content}
-                                        </div>
-                                      )}
-                                      <div className="meet-chat-msg-text">{msg.content}</div>
-                                      {msg.attachment_url && (
-                                        <div className="meet-chat-msg-attachment">
-                                          <img
-                                            src={msg.attachment_url}
-                                            alt={msg.attachment_name || 'Attachment'}
-                                            onClick={() => setActiveImageLightbox(msg.attachment_url)}
-                                          />
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })
-                            )}
-                            <div ref={chatMessagesEndRef} />
-                          </div>
-
-                          {/* Chat Input */}
-                          <div className="meet-drawer-chat-input-box">
-                            {replyingTo && (
-                              <div className="meet-reply-banner">
-                                <div className="reply-info">
-                                  <span>Replying to <strong>{replyingTo.sender}</strong></span>
-                                  <p>{replyingTo.content}</p>
-                                </div>
-                                <button type="button" onClick={() => setReplyingTo(null)}>
-                                  <span className="material-symbols-outlined">close</span>
-                                </button>
-                              </div>
-                            )}
-                            <div className="meet-input-row">
-                              <input
-                                type="file"
-                                ref={chatFileInputRef}
-                                style={{ display: 'none' }}
-                                accept="image/*"
-                                onChange={handleImageSelect}
-                              />
-                              <button
-                                type="button"
-                                className="meet-input-action-btn"
-                                onClick={() => chatFileInputRef.current && chatFileInputRef.current.click()}
-                                title="Attach Image"
-                              >
-                                <span className="material-symbols-outlined">attach_file</span>
-                              </button>
-                              <input
-                                type="text"
-                                className="meet-chat-text-input"
-                                placeholder="Send a message to everyone..."
-                                value={chatInputText}
-                                onChange={(e) => setChatInputText(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' && !e.shiftKey) {
-                                    e.preventDefault();
-                                    handleSendChatMessage(activeCallRoom);
-                                  }
-                                }}
-                              />
-                              <button
-                                type="button"
-                                className="meet-input-send-btn"
-                                disabled={!chatInputText.trim() && !chatAttachment}
-                                onClick={() => handleSendChatMessage(activeCallRoom)}
-                                title="Send message"
-                              >
-                                <span className="material-symbols-outlined">send</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* People Tab */}
-                      {meetingDrawerTab === 'people' && (
-                        <div className="meet-drawer-people-wrap">
-                          <button
-                            type="button"
-                            className="meet-drawer-add-people-btn"
-                            onClick={handleCopyGuestLink}
-                          >
-                            <span className="material-symbols-outlined">person_add</span>
-                            <span>Add people / Copy Invite Link</span>
-                          </button>
-
-                          {/* Waiting Knock Requests */}
-                          {pendingKnocks.length > 0 && (
-                            <div className="meet-people-section">
-                              <div className="meet-people-section-hdr" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span>Waiting Lobby ({pendingKnocks.length})</span>
-                                {pendingKnocks.length > 1 && isHostInCall && (
-                                  <button
-                                    type="button"
-                                    className="btn-admit-all"
-                                    style={{ fontSize: '11px', padding: '3px 10px' }}
-                                    onClick={() => {
-                                      pendingKnocks.forEach((k) => handleAdmitKnockGuest(k.id));
-                                    }}
-                                  >
-                                    Admit All
-                                  </button>
-                                )}
-                              </div>
-                              {pendingKnocks.map((k) => (
-                                <div key={k.id} className="meet-person-knock-card">
-                                  <div className="knock-avatar">{k.name.charAt(0).toUpperCase()}</div>
-                                  <div className="knock-details">
-                                    <span className="name">{k.name}</span>
-                                    <span className="office">{k.officeId}</span>
-                                  </div>
-                                  <div className="knock-actions">
-                                    <button
-                                      type="button"
-                                      className="knock-btn admit"
-                                      onClick={() => handleAdmitKnockGuest(k.id)}
-                                    >
-                                      Admit
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="knock-btn deny"
-                                      onClick={() => handleDenyKnockGuest(k.id)}
-                                    >
-                                      Deny
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* In-Call Participants */}
-                          <div className="meet-people-section">
-                            <div className="meet-people-section-hdr">
-                              In call ({connectedPeers.length + 1})
-                            </div>
-                            <div className="meet-person-card">
-                              <div className="person-avatar local-avatar">
-                                {guestName ? guestName.charAt(0).toUpperCase() : (isHostInCall ? 'H' : 'Y')}
-                              </div>
-                              <div className="person-info">
-                                <span className="person-name">You {isHostInCall ? '(Meeting Host)' : ''}</span>
-                                <span className="person-role">{isHostInCall ? 'Host' : 'Participant'}</span>
-                              </div>
-                              <div className="person-badges">
-                                {isHandRaised && (
-                                  <span className="hand-icon material-symbols-outlined" title="Hand raised">
-                                    front_hand
-                                  </span>
-                                )}
-                                <span
-                                  className={`mic-icon material-symbols-outlined ${isAudioMuted ? 'muted' : ''}`}
-                                  title={isAudioMuted ? 'Muted' : 'Microphone on'}
-                                >
-                                  {isAudioMuted ? 'mic_off' : 'mic'}
-                                </span>
-                              </div>
-                            </div>
-
-                            {connectedPeers.map((peer) => {
-                              const pInit = (peer.name || 'P').charAt(0).toUpperCase();
-                              return (
-                                <div key={peer.peerId} className="meet-person-card">
-                                  <div className="person-avatar remote-avatar">{pInit}</div>
-                                  <div className="person-info">
-                                    <span className="person-name">
-                                      {peer.name || 'Participant'} {peer.officeId ? `(${peer.officeId})` : ''}
-                                    </span>
-                                    <span className="person-role">{peer.isHost ? 'Meeting Host' : 'Participant'}</span>
-                                  </div>
-                                  <div className="person-badges">
-                                    {peer.isHandRaised && (
-                                      <span className="hand-icon material-symbols-outlined" title="Hand raised">
-                                        front_hand
-                                      </span>
-                                    )}
-                                    <span
-                                      className={`mic-icon material-symbols-outlined ${peer.isAudioMuted ? 'muted' : ''}`}
-                                      title={peer.isAudioMuted ? 'Muted' : 'Microphone on'}
-                                    >
-                                      {peer.isAudioMuted ? 'mic_off' : 'mic'}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      className="person-action-btn"
-                                      onClick={() => {
-                                        if (pinnedParticipant === peer.peerId) {
-                                          setPinnedParticipant(null);
-                                          setMeetingLayout('grid');
-                                        } else {
-                                          setPinnedParticipant(peer.peerId);
-                                          setMeetingLayout('spotlight');
-                                        }
-                                      }}
-                                      title={pinnedParticipant === peer.peerId ? 'Unpin' : 'Spotlight participant'}
-                                    >
-                                      <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
-                                        {pinnedParticipant === peer.peerId ? 'keep_off' : 'push_pin'}
-                                      </span>
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Meeting Details Tab */}
-                      {meetingDrawerTab === 'info' && (
-                        <div className="meet-drawer-info-wrap">
-                          <div className="meet-info-block">
-                            <h4>Joining info</h4>
-                            <p className="meet-info-desc">
-                              Share this meeting code or direct link with colleagues to join instantly with no boundaries.
-                            </p>
-                            <div className="meet-code-card">
-                              <span className="meet-code-label">Room Code</span>
-                              <div className="meet-code-value">#{activeCallRoom}</div>
-                              <button
-                                type="button"
-                                className="meet-info-copy-btn"
-                                onClick={() => {
-                                  if (navigator.clipboard) {
-                                    navigator.clipboard.writeText(activeCallRoom);
-                                    showToast('Room code copied');
-                                  }
-                                }}
-                              >
-                                <span className="material-symbols-outlined">content_copy</span>
-                                <span>Copy code</span>
-                              </button>
-                            </div>
-
-                            <div className="meet-link-card">
-                              <span className="meet-code-label">Direct Meeting Link</span>
-                              <div className="meet-link-url">{`${publicBaseUrl || getPublicWebOrigin()}?room=${activeCallRoom}`}</div>
-                              <button
-                                type="button"
-                                className="meet-info-copy-btn"
-                                onClick={handleCopyGuestLink}
-                              >
-                                <span className="material-symbols-outlined">link</span>
-                                <span>Copy joining link</span>
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="meet-info-block">
-                            <h4>Security & Encryption</h4>
-                            <div className="meet-security-item">
-                              <span className="material-symbols-outlined ok-icon">verified_user</span>
-                              <div>
-                                <strong>Peer-to-Peer Encrypted</strong>
-                                <p>WebRTC DTLS-SRTP audio & video streams are transmitted directly between peers.</p>
-                              </div>
-                            </div>
-                            <div className="meet-security-item">
-                              <span className="material-symbols-outlined ok-icon">bolt</span>
-                              <div>
-                                <strong>Zero Boundaries Quick Join</strong>
-                                <p>External attendees can join directly via browser without installing software.</p>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </aside>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      <ConferenceOverlay
+        activeCallRoom={activeCallRoom}
+        isCallMinimized={isCallMinimized}
+        setIsCallMinimized={setIsCallMinimized}
+        meetingDrawerTab={meetingDrawerTab}
+        setMeetingDrawerTab={setMeetingDrawerTab}
+        callDuration={callDuration}
+        connectedPeers={connectedPeers}
+        speakingPeers={speakingPeers}
+        handleEndCall={handleEndCall}
+        isVideoOff={isVideoOff}
+        guestName={guestName}
+        isHostInCall={isHostInCall}
+        localVideoRef={localVideoRef}
+        screenStreamRef={screenStreamRef}
+        localStreamRef={localStreamRef}
+        isScreenSharing={isScreenSharing}
+        isAudioMuted={isAudioMuted}
+        handleToggleAudio={handleToggleAudio}
+        handleToggleVideo={handleToggleVideo}
+        handleToggleScreenShare={handleToggleScreenShare}
+        callQuality={callQuality}
+        meetingLayout={meetingLayout}
+        setMeetingLayout={setMeetingLayout}
+        pinnedParticipant={pinnedParticipant}
+        setPinnedParticipant={setPinnedParticipant}
+        handleToggleFullscreen={handleToggleFullscreen}
+        isCallFullscreen={isCallFullscreen}
+        isLocalSpeaking={isLocalSpeaking}
+        isHandRaised={isHandRaised}
+        handleToggleRaiseHand={handleToggleRaiseHand}
+        callStatusText={callStatusText}
+        handleCopyGuestLink={handleCopyGuestLink}
+        pendingKnocks={pendingKnocks}
+        handleAdmitKnockGuest={handleAdmitKnockGuest}
+        handleDenyKnockGuest={handleDenyKnockGuest}
+        chatMessages={chatMessages}
+        handleLoadRoomMessages={handleLoadRoomMessages}
+        setActiveImageLightbox={setActiveImageLightbox}
+        chatMessagesEndRef={chatMessagesEndRef}
+        replyingTo={replyingTo}
+        setReplyingTo={setReplyingTo}
+        chatFileInputRef={chatFileInputRef}
+        handleImageSelect={handleImageSelect}
+        chatInputText={chatInputText}
+        setChatInputText={setChatInputText}
+        chatAttachment={chatAttachment}
+        handleSendChatMessage={handleSendChatMessage}
+        publicBaseUrl={publicBaseUrl}
+        getPublicWebOrigin={getPublicWebOrigin}
+        showToast={showToast}
+      />
 
       {/* Mobile Sticky Quick-Action Dock (Direct 1-tap mobile access) */}
       <nav className="mobile-action-bar">
@@ -6844,539 +3790,76 @@ function App() {
       </nav>
 
       {/* Floating / Docked Global Online Work Chat & Image Sharing Room */}
-      {isRoomChatOpen && (
-        <div className="room-chat-floating-dock">
-          {(() => {
-            const currentDockRoom = (activeCallRoom || activeChatRoom || 'general').trim().toLowerCase();
-            return (
-              <>
-                <div className="room-chat-header">
-                  <div className="room-chat-title-group">
-                    <span className="live-chat-dot"></span>
-                    <span className="room-chat-name">Room: <strong>#{currentDockRoom}</strong></span>
-                    <span className="room-chat-online-pill">{chatOnlineCount} online</span>
-                    <span className="room-chat-count">{chatMessages.length} msgs</span>
-                  </div>
-                  <div className="room-chat-header-actions">
-                    <button
-                      type="button"
-                      className="chat-hdr-btn"
-                      onClick={() => handleCopyChatShareLink(currentDockRoom)}
-                      title="Copy Shareable Chat Room Link"
-                    >
-                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>share</span>
-                      <span>Share</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-hdr-btn highlight-video"
-                      onClick={() => handleConnectGlobalChat(currentDockRoom)}
-                      title="Open Dedicated Full-Screen Chat"
-                    >
-                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>open_in_full</span>
-                      <span>Full View</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-hdr-btn close-chat-btn"
-                      onClick={() => setIsRoomChatOpen(false)}
-                      title="Close Chat"
-                    >
-                      <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  className={`room-chat-messages-scroll ${isDraggingOverChat ? 'is-drag-over' : ''}`}
-                  onScroll={handleChatScroll}
-                  onDragOver={handleChatDragOver}
-                  onDragLeave={handleChatDragLeave}
-                  onDrop={handleChatDrop}
-                >
-                  {isDraggingOverChat && (
-                    <div className="chat-dropzone-overlay">
-                      <span className="material-symbols-outlined drop-icon">cloud_upload</span>
-                      <p>Drop image here to share</p>
-                    </div>
-                  )}
-
-                  {chatMessages.length === 0 ? (
-                    <div className="chat-empty-slate">
-                      <span className="material-symbols-outlined chat-empty-icon">forum</span>
-                      <p>Welcome to <strong>#{currentDockRoom}</strong></p>
-                      <span>Anyone with this room code can join from any device. Start by sending a message, sharing a link, or dropping an image.</span>
-                      <button
-                        type="button"
-                        className="btn-copy-room-first"
-                        onClick={() => handleCopyChatShareLink(currentDockRoom)}
-                      >
-                        <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>content_copy</span>
-                        <span>Copy Room Link to Invite Team</span>
-                      </button>
-                    </div>
-                  ) : (
-                    chatMessages.map((m, idx) => {
-                      const isSelf =
-                        m.sender_name === (guestName.trim() || 'Colleague') ||
-                        m.sender_id === (sessionStorage.getItem('pcs_guest_office_id') || sessionStorage.getItem('pcs_user_id'));
-                      const timeStr = m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-                      const domId = `chat-msg-${m.id || m.client_msg_id || idx}`;
-                      const prevMsg = idx > 0 ? chatMessages[idx - 1] : null;
-                      const showDateSep = shouldShowDateSeparator(m.created_at, prevMsg?.created_at);
-                      const dateLabel = showDateSep ? getChatDayLabel(m.created_at) : null;
-
-                      return (
-                        <React.Fragment key={m.id || m.client_msg_id || idx}>
-                          {dateLabel && (
-                            <div className="chat-date-separator">
-                              <span className="date-chip">{dateLabel}</span>
-                            </div>
-                          )}
-                          <div
-                            id={domId}
-                            className={`chat-bubble-row ${isSelf ? 'self' : 'peer'} ${m.is_deleted ? 'msg-is-deleted' : ''}`}
-                          >
-                            <div className="chat-bubble">
-                              <div className="chat-bubble-meta">
-                                <span className="chat-sender-name">{m.sender_name}</span>
-                                <div className="chat-meta-right">
-                                  <span className="chat-timestamp">{timeStr}</span>
-                                  {isSelf && !m.is_deleted && (
-                                    <span className="chat-read-receipt" title="Delivered">
-                                      <span className="material-symbols-outlined receipt-icon">done_all</span>
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                              <div className="chat-bubble-content">
-                                {renderMessageContent(m)}
-                              </div>
-                              {!m.is_deleted && (
-                                <div className="chat-bubble-actions">
-                                  <button
-                                    type="button"
-                                    className="btn-bubble-action"
-                                    onClick={() => handleReplyChatMessage(m)}
-                                    title="Reply to message"
-                                  >
-                                    <span className="material-symbols-outlined">reply</span>
-                                  </button>
-                                  {m.content && (
-                                    <button
-                                      type="button"
-                                      className="btn-bubble-action"
-                                      onClick={() => handleCopyMessageText(m)}
-                                      title="Copy message text"
-                                    >
-                                      <span className="material-symbols-outlined">content_copy</span>
-                                    </button>
-                                  )}
-                                  {isSelf && (
-                                    <button
-                                      type="button"
-                                      className="btn-bubble-action btn-bubble-action-delete"
-                                      onClick={() => handleDeleteChatMessage(m.id)}
-                                      title="Delete for everyone"
-                                    >
-                                      <span className="material-symbols-outlined">delete</span>
-                                    </button>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </React.Fragment>
-                      );
-                    })
-                  )}
-                  <div ref={chatMessagesEndRef} />
-
-                  {showScrollDown && (
-                    <button
-                      type="button"
-                      className="btn-scroll-bottom dock-scroll-bottom"
-                      onClick={() => scrollToBottom(true)}
-                      title="Scroll to latest messages"
-                    >
-                      <span className="material-symbols-outlined">arrow_downward</span>
-                      {unreadWhileScrolled > 0 && (
-                        <span className="scroll-unread-badge">{unreadWhileScrolled}</span>
-                      )}
-                    </button>
-                  )}
-                </div>
-
-                <div className="room-chat-composer">
-                  {typingUsers.length > 0 && (
-                    <div className="chat-typing-indicator-bar mini-typing-bar">
-                      <div className="typing-bubble">
-                        <span className="typing-dot"></span>
-                        <span className="typing-dot"></span>
-                        <span className="typing-dot"></span>
-                      </div>
-                      <span className="typing-text">
-                        {typingUsers.length === 1
-                          ? `${typingUsers[0]} is typing...`
-                          : `${typingUsers.slice(0, 2).join(', ')} typing...`}
-                      </span>
-                    </div>
-                  )}
-
-                  {replyingTo && (
-                    <div className="chat-reply-preview-bar">
-                      <div className="reply-preview-content">
-                        <div className="reply-preview-sender">
-                          <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>reply</span>
-                          <span>Replying to <strong>{replyingTo.sender}</strong></span>
-                        </div>
-                        <div className="reply-preview-text">{replyingTo.content}</div>
-                      </div>
-                      <button
-                        type="button"
-                        className="btn-cancel-reply"
-                        onClick={() => setReplyingTo(null)}
-                        title="Cancel reply"
-                      >
-                        <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {chatAttachment && (
-                    <div className="chat-attachment-preview">
-                      <img src={chatAttachment.url} alt="Attachment Preview" className="preview-thumb" />
-                      <span className="preview-filename">{chatAttachment.name}</span>
-                      <button
-                        type="button"
-                        className="btn-remove-attachment"
-                        onClick={() => setChatAttachment(null)}
-                        title="Remove image attachment"
-                      >
-                        <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
-                      </button>
-                    </div>
-                  )}
-
-                  <div className="chat-composer-input-row">
-                    <input
-                      type="file"
-                      ref={chatFileInputRef}
-                      accept="image/*"
-                      style={{ display: 'none' }}
-                      onChange={handleImageSelect}
-                    />
-                    <button
-                      type="button"
-                      className="btn-attach-image"
-                      onClick={() => chatFileInputRef.current?.click()}
-                      title="Attach photo or image"
-                    >
-                      <span className="material-symbols-outlined">image</span>
-                    </button>
-                    <textarea
-                      className="chat-text-input"
-                      placeholder="Type a message, paste image, or drop work link..."
-                      rows="1"
-                      value={chatInputText}
-                      onChange={(e) => handleChatInputChange(e.target.value)}
-                      onPaste={handlePasteEvent}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          handleSendChatMessage(currentDockRoom);
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="btn-chat-send"
-                      onClick={() => handleSendChatMessage(currentDockRoom)}
-                      disabled={!chatInputText.trim() && !chatAttachment}
-                      title="Send Message"
-                    >
-                      <span className="material-symbols-outlined">send</span>
-                    </button>
-                  </div>
-                </div>
-              </>
-            );
-          })()}
-        </div>
-      )}
+      <FloatingChatDock
+        isOpen={isRoomChatOpen}
+        room={(activeCallRoom || activeChatRoom || 'general').trim().toLowerCase()}
+        messages={chatMessages}
+        guestName={guestName}
+        onlineCount={chatOnlineCount}
+        onClose={() => setIsRoomChatOpen(false)}
+        onCopyRoomLink={handleCopyChatShareLink}
+        onFullScreen={handleConnectGlobalChat}
+        chatInputText={chatInputText}
+        handleChatInputChange={handleChatInputChange}
+        chatAttachment={chatAttachment}
+        setChatAttachment={setChatAttachment}
+        chatFileInputRef={chatFileInputRef}
+        handleImageSelect={handleImageSelect}
+        handlePasteEvent={handlePasteEvent}
+        handleSendChatMessage={handleSendChatMessage}
+        chatMessagesEndRef={chatMessagesEndRef}
+        replyingTo={replyingTo}
+        setReplyingTo={setReplyingTo}
+        handleReplyChatMessage={handleReplyChatMessage}
+        handleCopyMessageText={handleCopyMessageText}
+        handleDeleteChatMessage={handleDeleteChatMessage}
+        onImageClick={setActiveImageLightbox}
+        typingUsers={typingUsers}
+        isDraggingOverChat={isDraggingOverChat}
+        handleChatScroll={handleChatScroll}
+        handleChatDragOver={handleChatDragOver}
+        handleChatDragLeave={handleChatDragLeave}
+        handleChatDrop={handleChatDrop}
+        showScrollDown={showScrollDown}
+        unreadWhileScrolled={unreadWhileScrolled}
+        scrollToBottom={scrollToBottom}
+      />
 
       {/* Direct Quick Join Modal - Instant Call & Chat with Zero Boundaries */}
-      {isQuickJoinModalOpen && (
-        <div className="create-room-modal-overlay" onClick={() => setIsQuickJoinModalOpen(false)}>
-          <div className="create-room-modal-card quick-join-card" onClick={(e) => e.stopPropagation()}>
-            <div className="create-room-modal-header">
-              <div className="modal-title-with-icon">
-                <span className="material-symbols-outlined modal-header-icon" style={{ background: '#fef08a', color: '#854d0e' }}>bolt</span>
-                <div>
-                  <h3>Direct Quick Join</h3>
-                  <p>Join an Instant Call or Work Chat directly using a room code with zero boundaries.</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="btn-modal-close"
-                onClick={() => setIsQuickJoinModalOpen(false)}
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="create-room-modal-body">
-              <div className="join-room-code-section" style={{ border: 'none', padding: 0 }}>
-                <h4>Enter Room Code</h4>
-                <p>Paste a room link or type the code (e.g. general, standup, alpha-7) to jump right in.</p>
-                <div className="join-room-form">
-                  <div className="join-input-wrap">
-                    <span className="material-symbols-outlined">tag</span>
-                    <input
-                      type="text"
-                      placeholder="e.g. general, team-sync, pcs-alpha"
-                      value={quickJoinCode}
-                      onChange={(e) => setQuickJoinCode(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          handleQuickJoinCall();
-                        }
-                      }}
-                      autoFocus
-                    />
-                    {quickJoinCode && (
-                      <button
-                        type="button"
-                        className="btn-clear-inline"
-                        onClick={() => setQuickJoinCode('')}
-                        title="Clear input"
-                      >
-                        <span className="material-symbols-outlined">close</span>
-                      </button>
-                    )}
-                  </div>
-                  <div className="quick-join-dual-buttons">
-                    <button
-                      type="button"
-                      className="btn-modal-quick-call"
-                      onClick={() => handleQuickJoinCall()}
-                      disabled={!quickJoinCode.trim()}
-                      title="Join video/audio call with this code directly"
-                    >
-                      <span className="material-symbols-outlined">videocam</span>
-                      <span>Join Call Directly</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-modal-quick-chat"
-                      onClick={() => handleQuickJoinChat()}
-                      disabled={!quickJoinCode.trim()}
-                      title="Join text/image chat with this code"
-                    >
-                      <span className="material-symbols-outlined">forum</span>
-                      <span>Join Work Chat</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="create-room-divider">
-                <span>OR START A FRESH INSTANT ROOM</span>
-              </div>
-
-              <div className="quick-general-section">
-                <button
-                  type="button"
-                  className="btn-primary-create-room"
-                  onClick={() => {
-                    setIsQuickJoinModalOpen(false);
-                    handleStartInstantCall();
-                  }}
-                >
-                  <span className="material-symbols-outlined">videocam</span>
-                  <span>Start New Instant Call</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <QuickJoinModal
+        isOpen={isQuickJoinModalOpen}
+        onClose={() => setIsQuickJoinModalOpen(false)}
+        quickJoinCode={quickJoinCode}
+        setQuickJoinCode={setQuickJoinCode}
+        handleQuickJoinCall={handleQuickJoinCall}
+        handleQuickJoinChat={handleQuickJoinChat}
+        handleStartInstantCall={handleStartInstantCall}
+      />
 
       {/* Create or Join Global Work Room Modal */}
-      {isCreateRoomModalOpen && (
-        <div className="create-room-modal-overlay">
-          <div className="create-room-modal-card">
-            <div className="create-room-modal-header">
-              <div className="modal-title-with-icon">
-                <span className="material-symbols-outlined modal-header-icon">forum</span>
-                <div>
-                  <h3>Global Online Collaboration Room</h3>
-                  <p>Create or join a room from any device. Share links, images, and chat instantly.</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="btn-modal-close"
-                onClick={() => setIsCreateRoomModalOpen(false)}
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="create-room-modal-body">
-              <div className="create-room-quick-section">
-                <h4>Option 1: Quick Create New Room</h4>
-                <p>Generates an instant secure collaboration room code that you can share.</p>
-                <button
-                  type="button"
-                  className="btn-primary-create-room"
-                  onClick={() => handleCreateNewRoom()}
-                >
-                  <span className="material-symbols-outlined">add_circle</span>
-                  <span>Create New Room</span>
-                </button>
-              </div>
-
-              <div className="create-room-divider">
-                <span>OR</span>
-              </div>
-
-              <div className="join-room-code-section">
-                <h4>Option 2: Enter Room Code to Join</h4>
-                <p>Have a code from a colleague? Enter it here to open the room on this device.</p>
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    handleCreateNewRoom(newRoomInputCode);
-                  }}
-                  className="join-room-form"
-                >
-                  <div className="join-input-wrap">
-                    <span className="material-symbols-outlined">key</span>
-                    <input
-                      type="text"
-                      placeholder="e.g. marketing-sync, work-784..."
-                      value={newRoomInputCode}
-                      onChange={(e) => setNewRoomInputCode(e.target.value)}
-                      autoFocus
-                    />
-                  </div>
-                  <button type="submit" className="btn-join-room-submit">
-                    <span>Join Room</span>
-                    <span className="material-symbols-outlined">arrow_forward</span>
-                  </button>
-                </form>
-              </div>
-
-              <div className="create-room-divider">
-                <span>OR</span>
-              </div>
-
-              <div className="quick-general-section">
-                <button
-                  type="button"
-                  className="btn-quick-general-room"
-                  onClick={() => handleCreateNewRoom('general')}
-                >
-                  <span className="material-symbols-outlined">tag</span>
-                  <span>Open General Team Chat (#general)</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <CreateRoomModal
+        isOpen={isCreateRoomModalOpen}
+        onClose={() => setIsCreateRoomModalOpen(false)}
+        handleCreateNewRoom={handleCreateNewRoom}
+        newRoomInputCode={newRoomInputCode}
+        setNewRoomInputCode={setNewRoomInputCode}
+      />
 
       {/* Image Lightbox Fullscreen Viewer */}
-      {activeImageLightbox && (
-        <div className="image-lightbox-overlay" onClick={() => setActiveImageLightbox(null)}>
-          <div className="image-lightbox-content" onClick={(e) => e.stopPropagation()}>
-            <div className="lightbox-header">
-              <span>Shared Work Image</span>
-              <div className="lightbox-actions">
-                <a
-                  href={activeImageLightbox}
-                  download="shared-work-image.png"
-                  className="lightbox-download-btn"
-                  title="Download Image"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>download</span>
-                  <span>Save</span>
-                </a>
-                <button
-                  type="button"
-                  className="lightbox-close-btn"
-                  onClick={() => setActiveImageLightbox(null)}
-                  title="Close Viewer"
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-            </div>
-            <div className="lightbox-img-frame">
-              <img src={activeImageLightbox} alt="Full resolution shared work asset" />
-            </div>
-          </div>
-        </div>
-      )}
+      <ImageLightbox
+        src={activeImageLightbox}
+        onClose={() => setActiveImageLightbox(null)}
+      />
 
       {/* Floating Host Admission Dialog for Knocking Guests */}
-      {pendingKnocks.length > 0 && (
-        <div className="host-knock-modal-overlay">
-          <div className="host-knock-card">
-            <div className="host-knock-header">
-              <span className="material-symbols-outlined knock-bell-icon">badge</span>
-              <div>
-                <h3>Guest Requesting Admission ({pendingKnocks.length})</h3>
-                <p>Verify Office ID and Full Name before admitting</p>
-              </div>
-            </div>
-            <div className="host-knock-body">
-              {pendingKnocks.map((k) => (
-                <div key={k.id} className="knock-item-row">
-                  <div className="knock-guest-info">
-                    <div className="knock-guest-name-row">
-                      <span className="knock-guest-name">{k.name}</span>
-                      <span className="knock-office-badge">ID: {k.officeId}</span>
-                    </div>
-                    <span className="knock-room-tag">Room: {k.roomId}</span>
-                  </div>
-                  <div className="knock-actions">
-                    <button
-                      type="button"
-                      className="btn-admit-guest"
-                      onClick={() => handleAdmitGuest(k.id, k.roomId)}
-                      title="Admit guest into meeting"
-                    >
-                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>how_to_reg</span>
-                      <span>Admit</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-deny-guest"
-                      onClick={() => handleDenyGuest(k.id, k.roomId)}
-                      title="Decline guest admission"
-                    >
-                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>block</span>
-                      <span>Decline</span>
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      <HostKnockModal
+        pendingKnocks={pendingKnocks}
+        handleAdmitGuest={handleAdmitGuest}
+        handleDenyGuest={handleDenyGuest}
+      />
 
       {/* Toast Alert */}
-      {toastMessage && (
-        <div className="toast-notice">
-          <span className="material-symbols-outlined" style={{ color: 'var(--color-green)' }}>check_circle</span>
-          <span>{toastMessage}</span>
-        </div>
-      )}
+      <Toast message={toastMessage} />
     </div>
   );
 }

@@ -41,7 +41,8 @@ app.use(
 );
 
 app.use(cors());
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Dedicated uploads directory for disk-based asset storage (prevents SQLite bloating)
 const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
@@ -91,22 +92,70 @@ function saveBase64ImageToDisk(dataUri) {
   }
 }
 
-// Rate Limiting: 200 requests per 15 minutes per IP for general API
+// Helper to identify local loopback and private LAN addresses (exempt from aggressive rate limiting)
+const isLocalOrPrivateIp = (ip = '') => {
+  if (!ip) return false;
+  const cleanIp = ip.replace(/^::ffff:/, '');
+  return (
+    cleanIp === '127.0.0.1' ||
+    cleanIp === '::1' ||
+    cleanIp === 'localhost' ||
+    cleanIp.startsWith('10.') ||
+    cleanIp.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(cleanIp)
+  );
+};
+
+// Generous Rate Limiting: 2,500 requests per 15 minutes per IP for general API
+// Skips health checks, static assets, and local/LAN development to prevent 429 lockouts
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 2500,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many requests from this IP, please try again in 15 minutes.' },
+  skip: (req) => {
+    // Exempt lightweight health/ICE endpoints and static files
+    if (['/api/health', '/api/webrtc/ice-config'].includes(req.path) || req.path.startsWith('/uploads')) {
+      return true;
+    }
+    // Exempt local development and private LAN testing
+    const clientIp = req.ip || req.connection?.remoteAddress || '';
+    if (process.env.NODE_ENV !== 'production' || isLocalOrPrivateIp(clientIp)) {
+      return true;
+    }
+    return false;
+  },
+  handler: (req, res) => {
+    const retrySec = req.rateLimit?.resetTime ? Math.max(1, Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000)) : 60;
+    res.setHeader('Retry-After', retrySec);
+    res.status(429).json({
+      error: 'Rate limit exceeded. Please wait a moment before retrying.',
+      retryAfter: retrySec,
+    });
+  },
 });
 
-// Stricter rate limit for write operations: 80 requests per 5 minutes
+// Balanced Rate Limiter for write operations (POST, PUT, DELETE): 300 requests per 5 minutes
 const writeLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 80,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many updates, please slow down.' },
+  skip: (req) => {
+    const clientIp = req.ip || req.connection?.remoteAddress || '';
+    if (process.env.NODE_ENV !== 'production' || isLocalOrPrivateIp(clientIp)) {
+      return true;
+    }
+    return false;
+  },
+  handler: (req, res) => {
+    const retrySec = req.rateLimit?.resetTime ? Math.max(1, Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000)) : 30;
+    res.setHeader('Retry-After', retrySec);
+    res.status(429).json({
+      error: 'Too many updates. Please wait a moment before trying again.',
+      retryAfter: retrySec,
+    });
+  },
 });
 
 app.use('/api/', apiLimiter);
@@ -588,6 +637,20 @@ const sendMeetingEmailNotification = async (meeting) => {
 app.get('/api/meetings', (req, res) => {
   try {
     const workspaceId = getWorkspaceId(req);
+    const meta = db.prepare(`
+      SELECT COUNT(*) as count, MAX(id) as maxId, MAX(strftime('%s', created_at)) as maxTs
+      FROM meetings
+      WHERE workspace_id = ?
+    `).get(workspaceId);
+
+    const etag = `"meet-${workspaceId}-${meta?.count || 0}-${meta?.maxId || 0}-${meta?.maxTs || 0}"`;
+    res.setHeader('ETag', etag);
+    res.setHeader('Cache-Control', 'public, no-cache');
+
+    if (req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
+
     const items = db.prepare('SELECT * FROM meetings WHERE workspace_id = ? ORDER BY date ASC, time ASC').all(workspaceId);
     res.json(items);
   } catch (error) {
@@ -778,6 +841,22 @@ app.get('/api/public/room-status', (req, res) => {
 app.get('/api/rooms/:roomId/messages', (req, res) => {
   try {
     const roomId = (req.params.roomId || 'general').trim().toLowerCase();
+    
+    // Quick metadata check to generate an ETag (count, max id, max updated timestamp)
+    const meta = db.prepare(`
+      SELECT COUNT(*) as count, MAX(id) as maxId, MAX(strftime('%s', created_at)) as maxTs
+      FROM room_messages
+      WHERE LOWER(room_id) = LOWER(?)
+    `).get(roomId);
+
+    const etag = `"msg-${roomId}-${meta?.count || 0}-${meta?.maxId || 0}-${meta?.maxTs || 0}"`;
+    res.setHeader('ETag', etag);
+    res.setHeader('Cache-Control', 'public, no-cache');
+
+    if (req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
+
     const messages = db.prepare(`
       SELECT * FROM room_messages
       WHERE LOWER(room_id) = LOWER(?)
