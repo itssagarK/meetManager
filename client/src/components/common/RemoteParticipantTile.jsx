@@ -5,6 +5,7 @@ export const RemoteParticipantTile = React.memo(({
   peer,
   isSpeaking,
   isPinned,
+  isOnFloor = false,
   onPin,
 }) => {
   const videoRef = useRef(null);
@@ -56,6 +57,12 @@ export const RemoteParticipantTile = React.memo(({
         <span className="participant-title">
           {peer.name || 'Participant'} {peer.isHost ? '(Host)' : ''}
         </span>
+        {isOnFloor && (
+          <span className="on-floor-badge" title="Active Speaker on the Floor">
+            <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>record_voice_over</span>
+            <span>On Floor</span>
+          </span>
+        )}
         {peer.isHandRaised && (
           <span className="raised-hand-badge">
             <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>

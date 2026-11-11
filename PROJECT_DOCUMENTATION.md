@@ -180,10 +180,12 @@ client/src/
 ├── utils/
 │   └── dateUtils.js                      # Date chips, humanized time labels, meeting duration formatters
 ├── hooks/
+│   ├── useAgendaTimer.js                 # In-call agenda timeboxing, countdown, Web Audio chimes & step navigation
+│   ├── useSpeakerQueue.js                # FIFO hand-raise queue, speaker countdown & floor turn-taking management
 │   └── useMeetingRecorder.js             # Client-side audio/video mixing & MediaRecorder pipeline
 └── components/
     ├── common/                           # Shared Atomic UI Blocks
-    │   ├── RemoteParticipantTile.jsx     # Memoized video tile with audio halo & pin indicators
+    │   ├── RemoteParticipantTile.jsx     # Memoized video tile with audio halo, floor badge & pin indicators
     │   ├── ImageLightbox.jsx             # Fullscreen interactive work asset viewer
     │   └── Toast.jsx                     # Non-blocking animated alert banners
     ├── chat/                             # Global Collaboration & Real-Time Messaging
@@ -206,7 +208,8 @@ client/src/
     │   ├── HostKnockModal.jsx            # Host gatekeeper admission approval dialog
     │   └── RecordingModal.jsx            # In-call meeting recording review, player & export dialog
     └── conference/                       # Real-Time WebRTC Calling Engine
-        └── ConferenceOverlay.jsx         # Google Meet calling stage, PiP mode & pill dock controls
+        ├── AgendaQueuePanel.jsx          # In-call Agenda Timebox checklist & Speaker Turn-Taking FIFO queue drawer
+        └── ConferenceOverlay.jsx         # Google Meet calling stage, PiP mode, top bar agenda pill & pill dock controls
 ```
 
 ---
@@ -653,6 +656,60 @@ flowchart TD
 4. **Interactive Export & Workspace Integration:**
    - On completion, the `<RecordingModal />` opens with an embedded video player, duration, file size metrics, one-click `.webm` and `.mp4` downloads, and an optional button to attach recording metadata directly to the scheduled meeting in the workspace database.
 
+### 5.7 Meeting Agenda Timeboxing & Speaker Turn-Taking Manager
+PCS Meet Manager integrates a comprehensive in-call **Agenda Timeboxing and Speaker Turn-Taking Engine** to prevent meeting drift, keep distributed standups on schedule, and democratize speaking turns:
+
+```mermaid
+flowchart TD
+    subgraph HostControls["Host & Facilitator Engine"]
+        AutoAgenda["Auto-Parsed Agenda from Scheduled Notes\n(Item Checklists & Custom Durations)"]
+        TimeboxTimer["Per-Topic Countdown & Overtime Clock\n(+MM:SS Overrun Alert & Chimes)"]
+        FloorModeration["Speaker Moderation\n(Give Floor, Pass Next, Clear Floor)"]
+    end
+
+    subgraph SyncEngine["Real-Time State Synchronization (/ws)"]
+        AgendaSync["agenda-sync Event\n(Active Index, Remaining Secs, Status)"]
+        QueueSync["speaker-queue-sync Event\n(FIFO Queue, Active Speaker, Remaining Secs)"]
+    end
+
+    subgraph ParticipantExperience["Participant & Audience View"]
+        TopBarPill["Top Bar Active Topic Pill\n(Time Remaining Badge & Progress Bar)"]
+        FloorTileBadge["RemoteParticipantTile 'On Floor' Badge\n(2-Min Turn Countdown & Speaker Aura)"]
+        DrawerPanel["Dual-Tab Side Drawer\n(Agenda Checklist & Live Speaker Queue)"]
+        AudioChimes["Web Audio Chimes\n(Warning Chime at 1 Min, Overtime Double Chime)"]
+    end
+
+    AutoAgenda --> TimeboxTimer
+    TimeboxTimer --> AgendaSync
+    FloorModeration --> QueueSync
+
+    AgendaSync --> TopBarPill
+    AgendaSync --> DrawerPanel
+    AgendaSync --> AudioChimes
+
+    QueueSync --> FloorTileBadge
+    QueueSync --> DrawerPanel
+    QueueSync --> AudioChimes
+```
+
+1. **Agenda Timeboxing & Step Progression (`useAgendaTimer`):**
+   - Automatically populates agenda topics from meeting notes bullet points upon joining, or allows custom topic creation with customizable durations (default 10m).
+   - Real-time countdown timer tracking allocated minutes and seconds per item.
+   - **Overtime Tracking (`+MM:SS`):** When a topic exceeds its allocated time, the timer dynamically shifts to a pulsating amber/red state with overtime incrementation.
+   - **Web Audio Auditory Warnings:** Distinct synthesized chimes notify participants when 1 minute remains (880 Hz tone) and when overtime is triggered (two-tone alert).
+   - **Host & Guest Controls:** Hosts possess start, pause, reset, step-forward, step-back, add, remove, and completion toggles. State is broadcast via `agenda-sync` to ensure zero-latency synchronization across all peer viewports.
+
+2. **FIFO Speaker Turn-Taking & Floor Manager (`useSpeakerQueue`):**
+   - Participants queue up using the "Raise Hand" button, maintaining a synchronized First-In-First-Out (FIFO) speaker queue.
+   - Hosts grant the floor to any queued participant or pass to the next member with one click.
+   - **2-Minute Speaking Limit:** When a participant is granted the floor, a 120-second turn countdown commences. At 30 seconds remaining, a warning chime sounds; at expiration, a transition chime signals turn completion.
+   - **Visual Floor Indicators:** The active speaker is prominently badged with a pulsating `🎙️ On Floor (MM:SS)` tag across their video tile and spotlight canvas.
+
+3. **In-Call UI Integration (`ConferenceOverlay.jsx` & `AgendaQueuePanel.jsx`):**
+   - **Top Bar Pill:** A minimalist top bar status pill displays the active topic name, remaining time badge, and completion progress bar.
+   - **Pill Dock Action:** A dedicated Agenda & Queue button in the bottom floating dock displays queue count badges.
+   - **Collapsible Drawer:** A dual-tab side panel (`Agenda` vs `Speakers`) enables rapid timebox tracking and floor moderation without obscuring video streams.
+
 ---
 
 ## 6. Corporate Knocking Lobby & Gatekeeping Handshake
@@ -933,6 +990,8 @@ The WebSocket server operates at path `/ws` over RFC 6455 protocols.
 | `signal` | Bidirectional | `{ type, roomId, toPeerId, fromPeerId, payload }` | Relays WebRTC SDP Offer, SDP Answer, or ICE Candidate directly to target peer. |
 | `peer-status` | Client $\rightarrow$ Server | `{ type, roomId, isAudioMuted, isVideoOff, isHandRaised }` | Broadcasts live mic, camera, or hand-raise state updates to all room peers. |
 | `raise-hand` | Client $\rightarrow$ Server | `{ type, roomId, senderName, isRaised }` | Broadcasts hand-raise status notification across room participants. |
+| `agenda-sync` | Bidirectional | `{ type, roomId, agendaItems, activeTopicIndex, isTimerActive, remainingSeconds, isOvertime }` | Synchronizes active agenda topic timebox, countdown state, and completion status across all meeting peers. |
+| `speaker-queue-sync` | Bidirectional | `{ type, roomId, speakerQueue, activeSpeaker }` | Synchronizes FIFO hand-raise turn-taking queue and active floor speaker countdown across all meeting peers. |
 | `chat-join` | Client $\rightarrow$ Server | `{ type, roomId }` | Subscribes socket to room chat; broadcasts updated `chat-presence` count. |
 | `chat-typing` | Client $\rightarrow$ Server | `{ type, roomId, senderName, isTyping }` | Relays ephemeral typing indicators to room subscribers. |
 | `chat-message` | Bidirectional | `{ type, roomId, message: {...} }` | Persists message in SQLite and broadcasts to all room subscribers. |
@@ -1107,11 +1166,11 @@ docker run -d \
 
 ```mermaid
 flowchart LR
-    Phase1["Phase 1: Component Modularization [COMPLETED]\n• Split App.jsx into feature subdirectories\n• Clean separation of views, chat & conference\n• Unified date and networking utilities"] --> Phase2["Phase 2: Scalability & Cloud Assets\n• Offload base64 images to S3/Cloudflare R2\n• Add JWT-based multi-tenancy\n• Automated SQLite schema migrations"]
-    Phase2 --> Phase3["Phase 3: Enterprise Calling Engine\n• Optional SFU Relay (LiveKit / Mediasoup)\n• Server-side meeting recording\n• AI meeting transcription & action items"]
+    Phase1["Phase 1: Calling Engine & Modularization [COMPLETED]\n• Split App.jsx into feature subdirectories\n• Native Client-Side Recording & Mixer\n• Agenda Timeboxing & Speaker Turn-Taking Engine"] --> Phase2["Phase 2: Scalability & Cloud Assets\n• Offload base64 images to S3/Cloudflare R2\n• Add JWT-based multi-tenancy\n• Automated SQLite schema migrations"]
+    Phase2 --> Phase3["Phase 3: Enterprise Calling Engine\n• Optional SFU Relay (LiveKit / Mediasoup)\n• Cloud meeting archiving\n• AI meeting transcription & action items"]
 ```
 
-* **Phase 1 (Component Modularization) — [COMPLETED]:** Decomposed the single `App.jsx` orchestrator into focused components (`components/views`, `components/conference`, `components/chat`, `components/modals`, `components/common`, `config/`, `utils/`).
+* **Phase 1 (Component Modularization & Calling Engine) — [COMPLETED]:** Decomposed the monolithic frontend into focused components (`components/views`, `components/conference`, `components/chat`, `components/modals`, `components/common`, `config/`, `utils/`), completed client-side audio/video meeting recording with multi-track mixing, and deployed real-time in-call Agenda Timeboxing and Speaker Turn-Taking FIFO moderation.
 * **Phase 2 (Cloud Asset Storage):** Transition from Base64 data URIs in SQLite to object storage (AWS S3 or Cloudflare R2), storing clean CDN URLs in the database.
 * **Phase 3 (Enterprise Calling & SFU):** Introduce an optional Selective Forwarding Unit (SFU) for large-scale conferences with 8+ participants, while preserving lightweight P2P mesh for 1:1 and small team calls.
 

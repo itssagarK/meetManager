@@ -1076,6 +1076,23 @@ wss.on('connection', (ws) => {
           peers: existingPeers,
         }));
 
+        // Send current synchronized agenda and speaker turn queue if active in this room
+        if (room.agenda) {
+          ws.send(JSON.stringify({
+            type: 'agenda-sync',
+            roomId: cleanRoom,
+            agenda: room.agenda,
+          }));
+        }
+        if (room.speakerQueue || room.activeSpeaker) {
+          ws.send(JSON.stringify({
+            type: 'speaker-queue-sync',
+            roomId: cleanRoom,
+            speakerQueue: room.speakerQueue || [],
+            activeSpeaker: room.activeSpeaker || null,
+          }));
+        }
+
         // 2. Broadcast new peer's arrival to all existing participants in the room
         const newPeerPayload = JSON.stringify({
           type: 'peer-joined',
@@ -1243,6 +1260,42 @@ wss.on('connection', (ws) => {
           room.participants.forEach((otherP, pId) => {
             if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
               otherP.ws.send(handPayload);
+            }
+          });
+        }
+      } else if (type === 'agenda-sync') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom && rooms.has(targetRoom)) {
+          const room = rooms.get(targetRoom);
+          room.agenda = data.agenda;
+          const syncPayload = JSON.stringify({
+            type: 'agenda-sync',
+            roomId: targetRoom,
+            agenda: data.agenda,
+            senderPeerId: currentPeerId,
+          });
+          room.participants.forEach((otherP, pId) => {
+            if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
+              otherP.ws.send(syncPayload);
+            }
+          });
+        }
+      } else if (type === 'speaker-queue-sync') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom && rooms.has(targetRoom)) {
+          const room = rooms.get(targetRoom);
+          room.speakerQueue = data.speakerQueue;
+          room.activeSpeaker = data.activeSpeaker;
+          const syncPayload = JSON.stringify({
+            type: 'speaker-queue-sync',
+            roomId: targetRoom,
+            speakerQueue: data.speakerQueue,
+            activeSpeaker: data.activeSpeaker,
+            senderPeerId: currentPeerId,
+          });
+          room.participants.forEach((otherP, pId) => {
+            if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
+              otherP.ws.send(syncPayload);
             }
           });
         }

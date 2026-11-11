@@ -1,5 +1,6 @@
 import React from 'react';
 import RemoteParticipantTile from '../common/RemoteParticipantTile.jsx';
+import AgendaQueuePanel from './AgendaQueuePanel.jsx';
 import { formatMeetingDuration } from '../../utils/dateUtils.js';
 
 export const ConferenceOverlay = ({
@@ -60,6 +61,9 @@ export const ConferenceOverlay = ({
   onPauseRecording,
   onResumeRecording,
   onStopRecording,
+  agendaState,
+  speakerState,
+  localPeerId,
 }) => {
   if (!activeCallRoom) return null;
 
@@ -232,6 +236,22 @@ export const ConferenceOverlay = ({
                   <span>{isRecordingPaused ? 'PAUSED' : 'REC'} {formatMeetingDuration(recordingDuration)}</span>
                 </div>
               )}
+              {/* Active Agenda Topic Pill */}
+              {agendaState?.activeTopic && (
+                <div
+                  className={`meet-agenda-top-pill ${agendaState.isOvertime ? 'is-overtime' : ''}`}
+                  onClick={() => setMeetingDrawerTab('agenda')}
+                  title="Click to view Agenda & Speaker Queue"
+                >
+                  <span className="material-symbols-outlined pill-icon">checklist</span>
+                  <span className="pill-topic-name">
+                    #{agendaState.activeTopicIndex + 1} {agendaState.activeTopic.title}
+                  </span>
+                  <span className={`pill-topic-timer ${agendaState.isOvertime ? 'overtime' : ''}`}>
+                    {agendaState.formatTimeRemaining()}
+                  </span>
+                </div>
+              )}
               <div className={`meet-quality-badge ${callQuality}`} title={`Network Status: ${callQuality}`}>
                 <span className="quality-dot"></span>
                 <span>{callQuality === 'stable' ? 'P2P Direct' : callQuality === 'relayed' ? 'Relay' : 'Connecting'}</span>
@@ -337,6 +357,12 @@ export const ConferenceOverlay = ({
                     <span className="participant-title">
                       You {isHostInCall ? '(Host)' : ''}
                     </span>
+                    {speakerState?.activeSpeaker?.peerId === localPeerId && (
+                      <span className="on-floor-badge is-local" title="You have the floor">
+                        <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>record_voice_over</span>
+                        <span>Your Turn</span>
+                      </span>
+                    )}
                     {isHandRaised && (
                       <span className="raised-hand-badge">
                         <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>front_hand</span>
@@ -379,6 +405,7 @@ export const ConferenceOverlay = ({
                           peer={pinnedPeer}
                           isSpeaking={speakingPeers.has(pinnedPeer.peerId)}
                           isPinned={true}
+                          isOnFloor={speakerState?.activeSpeaker?.peerId === pinnedPeer.peerId}
                           onPin={() => {
                             setPinnedParticipant(null);
                             setMeetingLayout('grid');
@@ -400,6 +427,7 @@ export const ConferenceOverlay = ({
                               peer={p}
                               isSpeaking={speakingPeers.has(p.peerId)}
                               isPinned={false}
+                              isOnFloor={speakerState?.activeSpeaker?.peerId === p.peerId}
                               onPin={() => {
                                 setPinnedParticipant(p.peerId);
                                 setMeetingLayout('spotlight');
@@ -421,6 +449,7 @@ export const ConferenceOverlay = ({
                       peer={peer}
                       isSpeaking={speakingPeers.has(peer.peerId)}
                       isPinned={false}
+                      isOnFloor={speakerState?.activeSpeaker?.peerId === peer.peerId}
                       onPin={() => {
                         setPinnedParticipant(peer.peerId);
                         setMeetingLayout('spotlight');
@@ -601,6 +630,19 @@ export const ConferenceOverlay = ({
                 <span className="dock-badge">{connectedPeers.length + 1}</span>
               </button>
 
+              {/* Meeting Agenda & Speaker Queue */}
+              <button
+                type="button"
+                className={`meet-dock-btn ${meetingDrawerTab === 'agenda' ? 'btn-active-blue' : ''}`}
+                onClick={() => setMeetingDrawerTab((prev) => (prev === 'agenda' ? null : 'agenda'))}
+                title="Agenda & Speaker Turn Queue"
+              >
+                <span className="material-symbols-outlined">checklist</span>
+                {agendaState?.agendaItems && (
+                  <span className="dock-badge">{agendaState.completedCount}/{agendaState.agendaItems.length}</span>
+                )}
+              </button>
+
               {/* Meeting Info */}
               <button
                 type="button"
@@ -629,6 +671,7 @@ export const ConferenceOverlay = ({
                   <h3 className="meet-drawer-title">
                     {meetingDrawerTab === 'chat' && 'In-call messages'}
                     {meetingDrawerTab === 'people' && `People (${connectedPeers.length + 1})`}
+                    {meetingDrawerTab === 'agenda' && 'Agenda & Speaker Queue'}
                     {meetingDrawerTab === 'info' && 'Meeting details'}
                   </h3>
                   <div className="meet-drawer-hdr-actions">
@@ -648,6 +691,14 @@ export const ConferenceOverlay = ({
                         title="People"
                       >
                         <span className="material-symbols-outlined">group</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`drawer-tab-btn ${meetingDrawerTab === 'agenda' ? 'active' : ''}`}
+                        onClick={() => setMeetingDrawerTab('agenda')}
+                        title="Agenda & Speaker Queue"
+                      >
+                        <span className="material-symbols-outlined">checklist</span>
                       </button>
                       <button
                         type="button"
@@ -912,6 +963,18 @@ export const ConferenceOverlay = ({
                         })}
                       </div>
                     </div>
+                  )}
+
+                  {/* Agenda & Speaker Queue Tab */}
+                  {meetingDrawerTab === 'agenda' && agendaState && speakerState && (
+                    <AgendaQueuePanel
+                      agendaState={agendaState}
+                      speakerState={speakerState}
+                      isHost={isHostInCall}
+                      localPeerId={localPeerId}
+                      isLocalHandRaised={isHandRaised}
+                      onToggleRaiseHand={handleToggleRaiseHand}
+                    />
                   )}
 
                   {/* Meeting Details Tab */}

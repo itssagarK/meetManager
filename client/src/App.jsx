@@ -29,6 +29,8 @@ import HostKnockModal from './components/modals/HostKnockModal.jsx';
 import RecordingModal from './components/modals/RecordingModal.jsx';
 import ConferenceOverlay from './components/conference/ConferenceOverlay.jsx';
 import useMeetingRecorder from './hooks/useMeetingRecorder.js';
+import useAgendaTimer from './hooks/useAgendaTimer.js';
+import useSpeakerQueue from './hooks/useSpeakerQueue.js';
 
 function App() {
   // Multi-Tenant Workspace State
@@ -191,6 +193,40 @@ function App() {
     discardRecording,
     downloadRecording,
   } = useMeetingRecorder();
+
+  // Agenda Timer & Speaker Turn-Taking Engine
+  const broadcastAgendaToRoom = useCallback((state) => {
+    if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN && activeCallRoom) {
+      wsSignalingRef.current.send(
+        JSON.stringify({
+          type: 'agenda-sync',
+          roomId: activeCallRoom,
+          agenda: state,
+        })
+      );
+    }
+  }, [activeCallRoom]);
+
+  const broadcastSpeakerQueueToRoom = useCallback((state) => {
+    if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN && activeCallRoom) {
+      wsSignalingRef.current.send(
+        JSON.stringify({
+          type: 'speaker-queue-sync',
+          roomId: activeCallRoom,
+          speakerQueue: state.speakerQueue,
+          activeSpeaker: state.activeSpeaker,
+        })
+      );
+    }
+  }, [activeCallRoom]);
+
+  const agendaState = useAgendaTimer({
+    onBroadcastAgenda: broadcastAgendaToRoom,
+  });
+
+  const speakerState = useSpeakerQueue({
+    onBroadcastSpeakerQueue: broadcastSpeakerQueueToRoom,
+  });
 
   const handleStartCallRecording = async () => {
     showToast('Select meeting tab or screen to record with mixed audio...');
@@ -886,6 +922,12 @@ function App() {
   const handleToggleRaiseHand = () => {
     const nextRaised = !isHandRaised;
     setIsHandRaised(nextRaised);
+    const myName = guestName.trim() || (isHostInCall ? 'Host' : 'Participant');
+    if (nextRaised) {
+      speakerState.joinQueue({ peerId: myPeerId, name: myName, officeId: guestOfficeId });
+    } else {
+      speakerState.leaveQueue(myPeerId);
+    }
     if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN) {
       wsSignalingRef.current.send(
         JSON.stringify({
@@ -893,7 +935,7 @@ function App() {
           roomId: activeCallRoom,
           peerId: myPeerId,
           isRaised: nextRaised,
-          senderName: guestName.trim() || (isHostInCall ? 'Host' : 'Participant'),
+          senderName: myName,
         })
       );
       wsSignalingRef.current.send(
@@ -907,7 +949,7 @@ function App() {
         })
       );
     }
-    showToast(nextRaised ? 'Hand raised' : 'Hand lowered');
+    showToast(nextRaised ? 'Hand raised & added to speaker queue' : 'Hand lowered');
   };
 
   const handleToggleFullscreen = () => {
@@ -1142,6 +1184,30 @@ function App() {
       remoteStreamsRef.current.clear();
       peerIceQueuesRef.current.clear();
 
+      // Check if scheduled meeting has defined agenda items or notes
+      const matchedMeeting = items.find(
+        (i) => i.type === 'meeting' && (i.room_id === cleanRoom || i.title?.toLowerCase().includes(cleanRoom))
+      );
+      if (matchedMeeting?.agenda) {
+        try {
+          const parsed = JSON.parse(matchedMeeting.agenda);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            agendaState.broadcastCurrentAgenda({ items: parsed });
+          }
+        } catch {
+          const lines = matchedMeeting.agenda.split('\n').filter((l) => l.trim());
+          if (lines.length > 0) {
+            const generatedTopics = lines.map((line, idx) => ({
+              id: `topic-${idx}-${Date.now()}`,
+              title: line.replace(/^[-*•\d.)\s]+/, '').trim() || `Topic ${idx + 1}`,
+              durationMinutes: 10,
+              isCompleted: false,
+            }));
+            agendaState.broadcastCurrentAgenda({ items: generatedTopics });
+          }
+        }
+      }
+
       // Acquire camera & microphone
       let stream;
       try {
@@ -1350,6 +1416,10 @@ function App() {
                 setPinnedParticipant(null);
                 setMeetingLayout('grid');
               }
+              speakerState.leaveQueue(leavingPeerId);
+              if (speakerState.activeSpeaker?.peerId === leavingPeerId) {
+                speakerState.clearFloor();
+              }
             }
           } else if (data.type === 'peer-status-update') {
             const { peerId: targetId, isAudioMuted: m, isVideoOff: v, isHandRaised: h } = data;
@@ -1377,8 +1447,20 @@ function App() {
               })
             );
             if (isRaised) {
+              speakerState.joinQueue({ peerId: targetId, name: senderName });
               showToast(`${senderName || 'Participant'} raised hand`);
+            } else {
+              speakerState.leaveQueue(targetId);
             }
+          } else if (data.type === 'agenda-sync') {
+            if (data.agenda) {
+              agendaState.applyRemoteSync(data.agenda);
+            }
+          } else if (data.type === 'speaker-queue-sync') {
+            speakerState.applyRemoteSync({
+              speakerQueue: data.speakerQueue,
+              activeSpeaker: data.activeSpeaker,
+            });
           } else if (data.type === 'chat-message') {
             if (data.message) {
               setChatMessages((prev) => {
@@ -3784,6 +3866,9 @@ function App() {
         onPauseRecording={pauseRecording}
         onResumeRecording={resumeRecording}
         onStopRecording={stopRecording}
+        agendaState={agendaState}
+        speakerState={speakerState}
+        localPeerId={myPeerId}
       />
 
       {/* Mobile Sticky Quick-Action Dock (Direct 1-tap mobile access) */}
