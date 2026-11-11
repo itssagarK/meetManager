@@ -53,6 +53,13 @@ export const ConferenceOverlay = ({
   publicBaseUrl,
   getPublicWebOrigin,
   showToast,
+  isRecording = false,
+  isRecordingPaused = false,
+  recordingDuration = 0,
+  onStartRecording,
+  onPauseRecording,
+  onResumeRecording,
+  onStopRecording,
 }) => {
   if (!activeCallRoom) return null;
 
@@ -66,6 +73,12 @@ export const ConferenceOverlay = ({
               <span className="live-call-indicator"></span>
               <span className="meet-pip-room">#{activeCallRoom}</span>
               <span className="meet-pip-timer">{formatMeetingDuration(callDuration)}</span>
+              {isRecording && (
+                <span className={`meet-pip-rec-pill ${isRecordingPaused ? 'is-paused' : 'is-recording'}`} title={isRecordingPaused ? 'Recording Paused' : 'Recording Live'}>
+                  <span className="rec-mini-dot"></span>
+                  <span>REC</span>
+                </span>
+              )}
               <span className="meet-pip-participants-badge">{connectedPeers.length + 1}</span>
             </div>
             <div className="meet-pip-actions">
@@ -210,6 +223,15 @@ export const ConferenceOverlay = ({
                 <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>schedule</span>
                 <span>{formatMeetingDuration(callDuration)}</span>
               </div>
+              {isRecording && (
+                <div
+                  className={`meet-rec-badge ${isRecordingPaused ? 'is-paused' : 'is-recording'}`}
+                  title={isRecordingPaused ? 'Meeting Recording Paused' : 'Meeting Recording Active'}
+                >
+                  <span className="rec-dot"></span>
+                  <span>{isRecordingPaused ? 'PAUSED' : 'REC'} {formatMeetingDuration(recordingDuration)}</span>
+                </div>
+              )}
               <div className={`meet-quality-badge ${callQuality}`} title={`Network Status: ${callQuality}`}>
                 <span className="quality-dot"></span>
                 <span>{callQuality === 'stable' ? 'P2P Direct' : callQuality === 'relayed' ? 'Relay' : 'Connecting'}</span>
@@ -517,6 +539,40 @@ export const ConferenceOverlay = ({
               >
                 <span className="material-symbols-outlined">front_hand</span>
               </button>
+
+              {/* Meeting Recording Controls */}
+              {!isRecording ? (
+                <button
+                  type="button"
+                  className="meet-dock-btn btn-start-record"
+                  onClick={onStartRecording}
+                  title="Record Meeting (Capture Video + Mixed Audio)"
+                >
+                  <span className="material-symbols-outlined rec-icon-red">radio_button_checked</span>
+                </button>
+              ) : (
+                <div className="meet-dock-rec-group">
+                  <button
+                    type="button"
+                    className={`meet-dock-btn btn-recording ${isRecordingPaused ? 'btn-rec-paused' : ''}`}
+                    onClick={isRecordingPaused ? onResumeRecording : onPauseRecording}
+                    title={isRecordingPaused ? 'Resume Recording' : 'Pause Recording'}
+                  >
+                    <span className="material-symbols-outlined">
+                      {isRecordingPaused ? 'play_arrow' : 'pause'}
+                    </span>
+                    <span className="dock-rec-dot-indicator"></span>
+                  </button>
+                  <button
+                    type="button"
+                    className="meet-dock-btn btn-rec-stop"
+                    onClick={onStopRecording}
+                    title="Stop Recording & Review"
+                  >
+                    <span className="material-symbols-outlined">stop</span>
+                  </button>
+                </div>
+              )}
 
               {/* In-Call Chat */}
               <button

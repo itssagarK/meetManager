@@ -173,12 +173,14 @@ The frontend application has been decoupled into modular, reusable, and maintain
 
 ```
 client/src/
-├── App.jsx                               # Master Application State Orchestrator (~3.8k lines)
+├── App.jsx                               # Master Application State Orchestrator (~3.9k lines)
 ├── App.css                               # Unified responsive & theme stylesheet
 ├── config/
 │   └── constants.js                      # Environment detection, API endpoints, RTC STUN/TURN, default schemas
 ├── utils/
 │   └── dateUtils.js                      # Date chips, humanized time labels, meeting duration formatters
+├── hooks/
+│   └── useMeetingRecorder.js             # Client-side audio/video mixing & MediaRecorder pipeline
 └── components/
     ├── common/                           # Shared Atomic UI Blocks
     │   ├── RemoteParticipantTile.jsx     # Memoized video tile with audio halo & pin indicators
@@ -201,7 +203,8 @@ client/src/
     │   ├── CommandPalette.jsx            # Ctrl+K spotlight search & quick action navigation
     │   ├── QuickJoinModal.jsx            # Instant direct room access (Call & Chat)
     │   ├── CreateRoomModal.jsx           # Global work collaboration room creator
-    │   └── HostKnockModal.jsx            # Host gatekeeper admission approval dialog
+    │   ├── HostKnockModal.jsx            # Host gatekeeper admission approval dialog
+    │   └── RecordingModal.jsx            # In-call meeting recording review, player & export dialog
     └── conference/                       # Real-Time WebRTC Calling Engine
         └── ConferenceOverlay.jsx         # Google Meet calling stage, PiP mode & pill dock controls
 ```
@@ -591,6 +594,64 @@ In **Spotlight Mode**, the pinned participant fills the hero canvas (`.meet-spot
 
 ### 5.5 Picture-in-Picture (PiP) Multitasking
 Clicking the minimize button (`isCallMinimized = true`) docks the meeting into a floating PiP card in the lower corner of the viewport. This card displays the active speaker's video, a self-view preview, and floating controls for mic mute, camera toggle, maximize, and call end, allowing users to navigate tasks and calendar items while remaining in the call.
+
+### 5.6 In-Call Meeting Recording & Client-Side Audio/Video Mixing Engine
+PCS Meet Manager includes a **100% client-side Meeting Recording Pipeline** powered by the native `MediaRecorder` and `AudioContext` APIs without requiring external cloud media servers or additional CPU overhead:
+
+```mermaid
+flowchart TD
+    subgraph AudioSources["Audio Mixing Pipeline (Web Audio API)"]
+        LocalMic["Local Microphone Track\n(localStream.getAudioTracks())"]
+        RemotePeersAudio["Remote Participant Tracks\n(remoteStreams.forEach)"]
+        TabDisplayAudio["Tab / System Audio\n(displayStream.getAudioTracks())"]
+        AudioCtx["AudioContext Mixer Node\n(createMediaStreamDestination())"]
+    end
+
+    subgraph VideoSources["Visual Capture Sources"]
+        DisplayCap["Tab / Window / Screen Video\n(navigator.mediaDevices.getDisplayMedia)"]
+        DirectFallback["Active Camera / Screen Stream\n(Direct P2P Fallback)"]
+    end
+
+    subgraph RecorderEngine["MediaRecorder Processing Engine"]
+        MimeNegotiation["Adaptive Codec Negotiation\n(video/webm;codecs=vp9,opus -> vp8 -> mp4)"]
+        ChunkCollector["1-Second Timeslice Chunks\n(Resilient In-Memory Buffer)"]
+        BlobAssembler["Final Blob & Object URL Generator"]
+    end
+
+    subgraph UserReviewModal["Recording Preview & Export Hub"]
+        VideoPreview["HTML5 Video Player Preview"]
+        WebmExport["Download .webm"]
+        Mp4Export["Download .mp4"]
+        MeetingNoteLink["Attach Note to Workspace Meeting"]
+    end
+
+    LocalMic --> AudioCtx
+    RemotePeersAudio --> AudioCtx
+    TabDisplayAudio --> AudioCtx
+
+    DisplayCap --> MimeNegotiation
+    DirectFallback -. "Fallback" .-> MimeNegotiation
+    AudioCtx --> MimeNegotiation
+
+    MimeNegotiation --> ChunkCollector
+    ChunkCollector --> BlobAssembler
+    BlobAssembler --> UserReviewModal
+```
+
+1. **Dual-Mode Video Capture:**
+   - **Screen / Current Tab Mode (Default):** Captures high-definition (up to 1080p/60fps) conference canvas, presentations, and active speaker tiles via `getDisplayMedia` with `preferCurrentTab: true`.
+   - **Direct Stream Fallback:** Captures active camera / screen stream directly if display media is declined.
+2. **Multi-Track Audio Mixing:**
+   - Standard browser display capture captures tab audio, but omits the speaker's local microphone.
+   - The engine creates a master `AudioContext` with a `MediaStreamDestination`, routing:
+     - Local microphone audio from `localStreamRef.current`
+     - Remote peers' audio tracks from `remoteStreamsRef.current`
+     - Tab / presentation audio from `displayStream`
+   - This ensures **both the speaker and all remote participants** are audible in the final recording.
+3. **Resilient Chunk Streaming:**
+   - The `MediaRecorder` runs with a `1,000ms` timeslice buffer (`recorder.start(1000)`), capturing continuous slices so data is never lost if a call is abruptly closed.
+4. **Interactive Export & Workspace Integration:**
+   - On completion, the `<RecordingModal />` opens with an embedded video player, duration, file size metrics, one-click `.webm` and `.mp4` downloads, and an optional button to attach recording metadata directly to the scheduled meeting in the workspace database.
 
 ---
 

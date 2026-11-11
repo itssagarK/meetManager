@@ -26,7 +26,9 @@ import ItemDrawer from './components/modals/ItemDrawer.jsx';
 import QuickJoinModal from './components/modals/QuickJoinModal.jsx';
 import CreateRoomModal from './components/modals/CreateRoomModal.jsx';
 import HostKnockModal from './components/modals/HostKnockModal.jsx';
+import RecordingModal from './components/modals/RecordingModal.jsx';
 import ConferenceOverlay from './components/conference/ConferenceOverlay.jsx';
+import useMeetingRecorder from './hooks/useMeetingRecorder.js';
 
 function App() {
   // Multi-Tenant Workspace State
@@ -170,6 +172,57 @@ function App() {
   const remoteStreamRef = useRef(null);
   const wsSignalingRef = useRef(null);
   const statsIntervalRef = useRef(null);
+
+  // In-Call Meeting Recording Engine
+  const {
+    isRecording,
+    isRecordingPaused,
+    recordingDuration,
+    recordedUrl,
+    recordingSize,
+    recordingMimeType,
+    isPreviewOpen,
+    setIsPreviewOpen,
+    recordingRoom,
+    startRecording,
+    pauseRecording,
+    resumeRecording,
+    stopRecording,
+    discardRecording,
+    downloadRecording,
+  } = useMeetingRecorder();
+
+  const handleStartCallRecording = async () => {
+    showToast('Select meeting tab or screen to record with mixed audio...');
+    const ok = await startRecording({
+      mode: 'screen',
+      localStream: localStreamRef.current,
+      screenStream: screenStreamRef.current,
+      remoteStreams: remoteStreamsRef.current,
+      room: activeCallRoom || 'general',
+    });
+    if (ok) {
+      showToast('Meeting recording active');
+    }
+  };
+
+  const handleAttachRecordingToMeeting = async (meetingId, noteText) => {
+    const targetItem = items.find((i) => i.id === meetingId);
+    if (!targetItem) return;
+    const updatedNotes = targetItem.notes ? `${targetItem.notes}\n\n${noteText}` : noteText;
+    const updated = { ...targetItem, notes: updatedNotes };
+    setItems((prev) => prev.map((i) => (i.id === meetingId ? updated : i)));
+    try {
+      await fetchWithWorkspace(`${API_URL}/api/meetings/${meetingId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      });
+      showToast('Recording note attached to meeting');
+    } catch {
+      showToast('Saved locally');
+    }
+  };
 
   // Focus Sprint (Pomodoro Buffer Timer)
   const [focusSprintSeconds, setFocusSprintSeconds] = useState(0);
@@ -1457,6 +1510,10 @@ function App() {
   };
 
   const handleEndCall = () => {
+    if (isRecording) {
+      stopRecording();
+      showToast('Meeting recording saved and ready for review');
+    }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
@@ -3720,6 +3777,13 @@ function App() {
         publicBaseUrl={publicBaseUrl}
         getPublicWebOrigin={getPublicWebOrigin}
         showToast={showToast}
+        isRecording={isRecording}
+        isRecordingPaused={isRecordingPaused}
+        recordingDuration={recordingDuration}
+        onStartRecording={handleStartCallRecording}
+        onPauseRecording={pauseRecording}
+        onResumeRecording={resumeRecording}
+        onStopRecording={stopRecording}
       />
 
       {/* Mobile Sticky Quick-Action Dock (Direct 1-tap mobile access) */}
@@ -3856,6 +3920,23 @@ function App() {
         pendingKnocks={pendingKnocks}
         handleAdmitGuest={handleAdmitGuest}
         handleDenyGuest={handleDenyGuest}
+      />
+
+      {/* Meeting Recording Review & Export Modal */}
+      <RecordingModal
+        isOpen={isPreviewOpen}
+        onClose={() => setIsPreviewOpen(false)}
+        recordedUrl={recordedUrl}
+        recordingDuration={recordingDuration}
+        recordingSize={recordingSize}
+        recordingMimeType={recordingMimeType}
+        recordingRoom={recordingRoom || activeCallRoom || 'general'}
+        downloadRecording={downloadRecording}
+        discardRecording={discardRecording}
+        onAttachToMeeting={handleAttachRecordingToMeeting}
+        activeMeeting={items.find(
+          (item) => item.type === 'meeting' && (item.room_id === (activeCallRoom || recordingRoom) || item.title?.toLowerCase().includes((activeCallRoom || recordingRoom || '').toLowerCase()))
+        )}
       />
 
       {/* Toast Alert */}
