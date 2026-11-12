@@ -10,6 +10,8 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
+import { runMigrations } from './migrations.js';
+import storage from './storage.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -177,71 +179,8 @@ const db = new Database(dbPath);
 // High-concurrency Write-Ahead Logging (WAL)
 db.pragma('journal_mode = WAL');
 
-// Initialize schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS meetings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    date TEXT NOT NULL,
-    time TEXT NOT NULL,
-    link TEXT,
-    attendees TEXT,
-    notes TEXT,
-    priority TEXT DEFAULT 'Medium',
-    status TEXT DEFAULT 'Pending',
-    type TEXT DEFAULT 'task',
-    workspace_id TEXT DEFAULT 'default',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-try {
-  db.exec("ALTER TABLE meetings ADD COLUMN priority TEXT DEFAULT 'Medium'");
-} catch (e) {}
-
-try {
-  db.exec("ALTER TABLE meetings ADD COLUMN type TEXT DEFAULT 'task'");
-} catch (e) {}
-
-try {
-  db.exec("ALTER TABLE meetings ADD COLUMN workspace_id TEXT DEFAULT 'default'");
-} catch (e) {}
-
-// Room messages schema for global online chat, images, and work links
-db.exec(`
-  CREATE TABLE IF NOT EXISTS room_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id TEXT NOT NULL,
-    sender_name TEXT NOT NULL,
-    sender_id TEXT,
-    content TEXT,
-    attachment_url TEXT,
-    attachment_type TEXT DEFAULT 'text',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-try {
-  db.exec('CREATE INDEX IF NOT EXISTS idx_room_messages_room ON room_messages(room_id)');
-} catch (e) {}
-
-try {
-  db.exec('ALTER TABLE room_messages ADD COLUMN client_msg_id TEXT');
-} catch (e) {}
-try {
-  db.exec('ALTER TABLE room_messages ADD COLUMN reply_to_id INTEGER');
-} catch (e) {}
-try {
-  db.exec('ALTER TABLE room_messages ADD COLUMN reply_to_sender TEXT');
-} catch (e) {}
-try {
-  db.exec('ALTER TABLE room_messages ADD COLUMN reply_to_content TEXT');
-} catch (e) {}
-try {
-  db.exec('ALTER TABLE room_messages ADD COLUMN is_deleted INTEGER DEFAULT 0');
-} catch (e) {}
-try {
-  db.exec('CREATE INDEX IF NOT EXISTS idx_room_messages_client_id ON room_messages(client_msg_id)');
-} catch (e) {}
+// Execute versioned schema migrations (creates meetings, room_messages, media_assets, etc.)
+runMigrations(db);
 
 // Clean up duplicate historical messages (keep earliest id per unique content)
 try {
@@ -302,56 +241,82 @@ try {
   console.error('Townhall date cleanup error:', e);
 }
 
-// Storage Migration: Extract any existing Base64 images from SQLite to disk and update URLs
-try {
-  const legacyRows = db.prepare(`
-    SELECT id, attachment_url FROM room_messages 
-    WHERE attachment_url LIKE 'data:%'
-  `).all();
-  
-  if (legacyRows && legacyRows.length > 0) {
-    console.log(`[Storage Migration] Found ${legacyRows.length} legacy base64 image(s) in SQLite. Migrating to disk...`);
-    const updateStmt = db.prepare('UPDATE room_messages SET attachment_url = ? WHERE id = ?');
-    
-    db.transaction((rows) => {
-      for (const row of rows) {
-        const diskUrl = saveBase64ImageToDisk(row.attachment_url);
-        if (diskUrl && diskUrl !== row.attachment_url) {
-          updateStmt.run(diskUrl, row.id);
-        }
-      }
-    })(legacyRows);
-    
-    console.log(`[Storage Migration] Completed migration. Vacuuming SQLite database...`);
-    try { db.exec('VACUUM'); } catch (e) {}
+// Storage Subsystem: Initial background asset offloading (Base64 -> Cloudflare R2 / S3 / Disk)
+storage.migrateAllLegacyAssets(db).then((report) => {
+  if (report.migrated > 0) {
+    console.log(`[Storage Migration] Offloaded ${report.migrated} asset(s) (${storage.formatBytes(report.totalBytesMigrated)}) to ${report.targetProvider}.`);
   }
-} catch (e) {
-  console.error('Storage migration notice:', e);
-}
+}).catch((e) => {
+  console.warn('[Storage Migration] Notice:', e.message);
+});
 
-// Media Upload Endpoint: Saves base64 images directly to disk storage
-app.post('/api/upload', (req, res) => {
+// Multi-Driver Cloud & Local Media Upload Endpoint (Cloudflare R2 / AWS S3 / Local Disk)
+app.post('/api/upload', async (req, res) => {
   try {
     const { dataUrl, filename: origName, attachmentType } = req.body;
     if (!dataUrl) {
       return res.status(400).json({ error: 'No dataUrl provided' });
     }
-    const savedUrl = saveBase64ImageToDisk(dataUrl);
-    const basename = path.basename(savedUrl);
-    let fileSize = 0;
-    try {
-      fileSize = fs.statSync(path.join(uploadDir, basename)).size;
-    } catch (e) {}
-    
+    const workspaceId = req.headers['x-workspace-id'] || 'default';
+    const uploadResult = await storage.uploadBase64(dataUrl, origName, {
+      db,
+      workspaceId,
+      uploaderId: 'user',
+    });
+
     return res.json({
-      url: savedUrl,
-      name: origName || basename,
-      size: fileSize,
+      url: uploadResult.url,
+      name: uploadResult.name || origName,
+      size: uploadResult.size,
       type: attachmentType || 'image',
+      provider: uploadResult.provider,
+      key: uploadResult.key,
     });
   } catch (err) {
     console.error('Upload endpoint error:', err);
     return res.status(500).json({ error: 'File upload failed' });
+  }
+});
+
+// Storage Provider & Telemetry Endpoint
+app.get('/api/storage/status', (req, res) => {
+  try {
+    const status = storage.getStatus(db);
+    return res.json({
+      status: 'ok',
+      ...status,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'Could not fetch storage status' });
+  }
+});
+
+// Bulk Asset Migration Endpoint: Offload Base64 / Local Assets to Cloudflare R2 / S3
+app.post('/api/storage/migrate', async (req, res) => {
+  try {
+    const report = await storage.migrateAllLegacyAssets(db);
+    return res.json({
+      success: true,
+      ...report,
+    });
+  } catch (err) {
+    console.error('Manual migration trigger error:', err);
+    return res.status(500).json({ error: err.message || 'Asset migration failed' });
+  }
+});
+
+// Media Assets Registry Endpoint
+app.get('/api/storage/assets', (req, res) => {
+  try {
+    const workspaceId = req.headers['x-workspace-id'] || 'default';
+    const assets = db.prepare(`
+      SELECT * FROM media_assets 
+      WHERE workspace_id = ? OR workspace_id = 'default' 
+      ORDER BY id DESC LIMIT 100
+    `).all(workspaceId);
+    return res.json({ assets });
+  } catch (err) {
+    return res.status(500).json({ error: 'Could not fetch assets' });
   }
 });
 
