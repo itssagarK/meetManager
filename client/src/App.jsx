@@ -31,6 +31,7 @@ import ConferenceOverlay from './components/conference/ConferenceOverlay.jsx';
 import useMeetingRecorder from './hooks/useMeetingRecorder.js';
 import useAgendaTimer from './hooks/useAgendaTimer.js';
 import useSpeakerQueue from './hooks/useSpeakerQueue.js';
+import useFileTransfer from './hooks/useFileTransfer.js';
 
 function App() {
   // Multi-Tenant Workspace State
@@ -227,6 +228,21 @@ function App() {
   const speakerState = useSpeakerQueue({
     onBroadcastSpeakerQueue: broadcastSpeakerQueueToRoom,
   });
+
+  const fileTransferState = useFileTransfer({
+    localPeerId: myPeerId,
+    localName: guestName.trim() || (isHostInCall ? 'Host' : 'You'),
+    onFileReceivedNotification: (meta) => {
+      showToast(`📁 ${meta.senderName} shared "${meta.name}"`);
+    },
+  });
+
+  const {
+    createDataChannelForPeer,
+    handleDataChannelEvent,
+    closeDataChannelForPeer,
+    clearAllTransfers,
+  } = fileTransferState;
 
   const handleStartCallRecording = async () => {
     showToast('Select meeting tab or screen to record with mixed audio...');
@@ -1004,6 +1020,16 @@ function App() {
       if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
     } catch (e) {}
 
+    // Initialize P2P DataChannel for File & Document Streaming
+    if (isInitiator) {
+      createDataChannelForPeer(pc, remotePeerId);
+    }
+    pc.ondatachannel = (event) => {
+      if (event.channel && event.channel.label === 'pcs-p2p-files') {
+        handleDataChannelEvent(remotePeerId, event.channel);
+      }
+    };
+
     // On remote track arrival from this specific peer
     pc.ontrack = (event) => {
       console.log(`[WebRTC Mesh] ontrack from ${remotePeerId}:`, event.track.kind);
@@ -1391,6 +1417,7 @@ function App() {
           } else if (data.type === 'peer-left' || data.type === 'host-left') {
             const leavingPeerId = data.peerId;
             if (leavingPeerId) {
+              closeDataChannelForPeer(leavingPeerId);
               if (peerConnectionsRef.current.has(leavingPeerId)) {
                 try {
                   peerConnectionsRef.current.get(leavingPeerId).close();
@@ -1615,6 +1642,7 @@ function App() {
     remoteStreamsRef.current.clear();
     peerIceQueuesRef.current.clear();
     peerAudioAnalysersRef.current.clear();
+    clearAllTransfers();
 
     if (wsSignalingRef.current) {
       wsSignalingRef.current.close();
@@ -3868,6 +3896,7 @@ function App() {
         onStopRecording={stopRecording}
         agendaState={agendaState}
         speakerState={speakerState}
+        fileTransferState={fileTransferState}
         localPeerId={myPeerId}
       />
 

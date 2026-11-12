@@ -8030,3 +8030,403 @@ body {
 .btn-give-floor:hover {
   background: #2d9247;
 }
+
+/* ==========================================================================
+   P2P WebRTC Direct File & Document Sharing
+   ========================================================================== */
+.meet-file-panel-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 14px 20px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.meet-file-panel-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.meet-file-stats-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.p2p-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(52, 168, 83, 0.12);
+  border: 1px solid rgba(52, 168, 83, 0.3);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #81c995;
+}
+
+.p2p-badge-icon {
+  font-size: 14px;
+  color: #34a853;
+}
+
+.p2p-peers-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9aa0a6;
+}
+
+.meet-file-desc {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #9aa0a6;
+  margin: 0;
+}
+
+.meet-file-error-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(234, 67, 53, 0.15);
+  border: 1px solid rgba(234, 67, 53, 0.4);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #f28b82;
+}
+
+.meet-file-error-alert button {
+  background: transparent;
+  border: none;
+  color: #f28b82;
+  margin-left: auto;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+
+.meet-file-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px 16px;
+  background: #202124;
+  border: 2px dashed #5f6368;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+  user-select: none;
+}
+
+.meet-file-dropzone:hover {
+  border-color: #8ab4f8;
+  background: #282a2d;
+}
+
+.meet-file-dropzone.drag-over {
+  border-color: #8ab4f8;
+  background: rgba(138, 180, 248, 0.12);
+  transform: scale(1.01);
+}
+
+.dropzone-icon-circle {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(138, 180, 248, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8ab4f8;
+}
+
+.dropzone-icon {
+  font-size: 26px;
+}
+
+.dropzone-text-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dropzone-text-group strong {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e8eaed;
+}
+
+.dropzone-text-group span {
+  font-size: 11px;
+  color: #9aa0a6;
+}
+
+.dropzone-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.format-chip {
+  background: #303134;
+  border: 1px solid #3c4043;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #bdc1c6;
+}
+
+.meet-file-list-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.meet-file-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.meet-file-list-header h4 {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9aa0a6;
+  margin: 0;
+}
+
+.meet-file-clear-btn {
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8ab4f8;
+  cursor: pointer;
+  padding: 0;
+}
+
+.meet-file-clear-btn:hover {
+  text-decoration: underline;
+}
+
+.meet-file-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 16px;
+  background: #202124;
+  border: 1px solid #303134;
+  border-radius: 10px;
+  text-align: center;
+  gap: 6px;
+}
+
+.meet-file-empty-state .empty-icon {
+  font-size: 34px;
+  color: #5f6368;
+}
+
+.meet-file-empty-state .empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #bdc1c6;
+}
+
+.meet-file-empty-state .empty-sub {
+  margin: 0;
+  font-size: 11px;
+  color: #9aa0a6;
+  max-width: 260px;
+  line-height: 1.4;
+}
+
+.meet-file-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meet-file-card {
+  background: #202124;
+  border: 1px solid #3c4043;
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s ease;
+}
+
+.meet-file-card:hover {
+  border-color: #5f6368;
+}
+
+.meet-file-card.completed {
+  border-left: 3px solid #34a853;
+}
+
+.meet-file-card.sending,
+.meet-file-card.receiving {
+  border-left: 3px solid #8ab4f8;
+}
+
+.file-card-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.file-visual-box {
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.file-visual-box .material-symbols-outlined {
+  font-size: 22px;
+}
+
+.file-info-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.file-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.file-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #ffffff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-status-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.file-status-pill.completed {
+  background: rgba(52, 168, 83, 0.15);
+  color: #81c995;
+}
+
+.file-status-pill.sending,
+.file-status-pill.receiving {
+  background: rgba(138, 180, 248, 0.15);
+  color: #8ab4f8;
+}
+
+.file-status-pill.cancelled {
+  background: rgba(234, 67, 53, 0.15);
+  color: #f28b82;
+}
+
+.file-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #9aa0a6;
+}
+
+.file-progress-track {
+  width: 100%;
+  height: 4px;
+  background: #303134;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.file-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #8ab4f8, #34a853);
+  transition: width 0.2s ease;
+}
+
+.file-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid #303134;
+  padding-top: 8px;
+}
+
+.file-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+.file-btn .material-symbols-outlined {
+  font-size: 15px;
+}
+
+.file-btn.download {
+  background: #34a853;
+  color: #ffffff;
+}
+
+.file-btn.download:hover {
+  background: #2d9247;
+}
+
+.file-btn.preview {
+  background: #303134;
+  color: #bdc1c6;
+  border: 1px solid #3c4043;
+}
+
+.file-btn.preview:hover {
+  background: #3c4043;
+  color: #ffffff;
+}
+
+.file-btn.cancel {
+  background: transparent;
+  color: #f28b82;
+}
+
+.file-btn.cancel:hover {
+  background: rgba(234, 67, 53, 0.1);
+}

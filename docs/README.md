@@ -182,6 +182,7 @@ client/src/
 ├── hooks/
 │   ├── useAgendaTimer.js                 # In-call agenda timeboxing, countdown, Web Audio chimes & step navigation
 │   ├── useSpeakerQueue.js                # FIFO hand-raise queue, speaker countdown & floor turn-taking management
+│   ├── useFileTransfer.js                # WebRTC RTCDataChannel P2P file & document streaming engine
 │   └── useMeetingRecorder.js             # Client-side audio/video mixing & MediaRecorder pipeline
 └── components/
     ├── common/                           # Shared Atomic UI Blocks
@@ -209,6 +210,7 @@ client/src/
     │   └── RecordingModal.jsx            # In-call meeting recording review, player & export dialog
     └── conference/                       # Real-Time WebRTC Calling Engine
         ├── AgendaQueuePanel.jsx          # In-call Agenda Timebox checklist & Speaker Turn-Taking FIFO queue drawer
+        ├── FileTransferPanel.jsx         # P2P encrypted file dropper, transfer progress & instant downloader
         └── ConferenceOverlay.jsx         # Google Meet calling stage, PiP mode, top bar agenda pill & pill dock controls
 ```
 
@@ -710,6 +712,59 @@ flowchart TD
    - **Pill Dock Action:** A dedicated Agenda & Queue button in the bottom floating dock displays queue count badges.
    - **Collapsible Drawer:** A dual-tab side panel (`Agenda` vs `Speakers`) enables rapid timebox tracking and floor moderation without obscuring video streams.
 
+### 5.8 WebRTC Peer-to-Peer Encrypted File & Document Sharing (`RTCDataChannel`)
+PCS Meet Manager includes a **Zero-Cloud, Peer-to-Peer File & Document Sharing Engine** operating directly over WebRTC `RTCDataChannel` connections:
+
+```mermaid
+flowchart TD
+    subgraph SenderNode["Sender Browser Node"]
+        SelectFile["User Drags & Drops File\n(PDF, Archive, Images, Code, Docs)"]
+        Slicer["Binary Chunk Slicer\n(48 KB slices -> Base64 packets)"]
+        FlowControl["WebRTC Buffer Flow Controller\n(Checks bufferedAmount <= 256 KB)"]
+        MetaPacket["Send file-meta Packet\n(fileId, name, size, mimeType, chunks)"]
+        ChunkStream["Stream file-chunk Packets\n(fileId, chunkIndex, binaryData)"]
+    end
+
+    subgraph P2PMesh["Encrypted WebRTC P2P Data Mesh"]
+        DC1["Direct RTCDataChannel ('pcs-p2p-files')\n(DTLS-SRTP 100% P2P Encryption)"]
+    end
+
+    subgraph ReceiverNode["Receiver Browser Node"]
+        MetaOffer["Receive file-meta Offer\n(Display Incoming File & Trigger Toast)"]
+        BufferQueue["Buffer Array Reassembly\n(tracks receivedChunks & progress %)"]
+        BlobGen["Assemble Final Blob & Object URL\n(new Blob(chunks, { type: mimeType }))"]
+        AudioNotice["Synthesized Audio Chime (587Hz -> 880Hz)"]
+        UIAction["Render 'Available' Card with One-Click Download"]
+    end
+
+    SelectFile --> Slicer
+    Slicer --> MetaPacket
+    MetaPacket --> DC1
+    Slicer --> FlowControl
+    FlowControl --> ChunkStream
+    ChunkStream --> DC1
+
+    DC1 --> MetaOffer
+    DC1 --> BufferQueue
+    BufferQueue --> BlobGen
+    BlobGen --> AudioNotice
+    BlobGen --> UIAction
+```
+
+1. **Zero-Cloud Privacy & Bandwidth Efficiency:**
+   - Files are transferred point-to-point directly between participant browsers using WebRTC `RTCDataChannel` (`ordered: true`).
+   - Files never touch backend application servers, cloud storage buckets (AWS S3), or the SQLite database, guaranteeing zero egress bandwidth expenses and total data confidentiality.
+
+2. **Chunking & Flow Control Protocol:**
+   - Files of any size or type are sliced into `48 KB` binary slices, converted into resilient Base64 packets.
+   - **Backpressure & Flow Control:** To prevent socket buffer drops on fast connections or large files, the streaming loop monitors `dc.bufferedAmount`. When exceeding `256 KB`, the loop awaits the `bufferedamountlow` event before transmitting subsequent chunks.
+
+3. **In-Call User Experience (`FileTransferPanel.jsx`):**
+   - **Modern Drag-and-Drop Dropzone:** Intuitive drop target supporting multi-file selection with file type detection (PDF, images, zip archives, spreadsheets, code files).
+   - **Live Transfer Progress:** Dual-direction progress bars tracking upload/download percentage, transferred byte counts, and transfer statuses (`Sending`, `Receiving`, `Available`, `Cancelled`).
+   - **Instant Download & Lightbox Preview:** Completed transfers expose a 1-click native download link with original filenames, plus lightbox image previewing for image files.
+   - **Notification Chimes & Unread Badges:** Unread file counters on side drawer tabs and dock icons, combined with Web Audio chimes upon arrival.
+
 ---
 
 ## 6. Corporate Knocking Lobby & Gatekeeping Handshake
@@ -1166,11 +1221,11 @@ docker run -d \
 
 ```mermaid
 flowchart LR
-    Phase1["Phase 1: Calling Engine & Modularization [COMPLETED]\n• Split App.jsx into feature subdirectories\n• Native Client-Side Recording & Mixer\n• Agenda Timeboxing & Speaker Turn-Taking Engine"] --> Phase2["Phase 2: Scalability & Cloud Assets\n• Offload base64 images to S3/Cloudflare R2\n• Add JWT-based multi-tenancy\n• Automated SQLite schema migrations"]
+    Phase1["Phase 1: Calling Engine & Modularization [COMPLETED]\n• Split App.jsx into feature subdirectories\n• Native Client-Side Recording & Mixer\n• Agenda Timeboxing & Speaker Turn-Taking\n• P2P Encrypted File Sharing (RTCDataChannel)"] --> Phase2["Phase 2: Scalability & Cloud Assets\n• Offload base64 images to S3/Cloudflare R2\n• Add JWT-based multi-tenancy\n• Automated SQLite schema migrations"]
     Phase2 --> Phase3["Phase 3: Enterprise Calling Engine\n• Optional SFU Relay (LiveKit / Mediasoup)\n• Cloud meeting archiving\n• AI meeting transcription & action items"]
 ```
 
-* **Phase 1 (Component Modularization & Calling Engine) — [COMPLETED]:** Decomposed the monolithic frontend into focused components (`components/views`, `components/conference`, `components/chat`, `components/modals`, `components/common`, `config/`, `utils/`), completed client-side audio/video meeting recording with multi-track mixing, and deployed real-time in-call Agenda Timeboxing and Speaker Turn-Taking FIFO moderation.
+* **Phase 1 (Component Modularization & Calling Engine) — [COMPLETED]:** Decomposed the monolithic frontend into focused components (`components/views`, `components/conference`, `components/chat`, `components/modals`, `components/common`, `config/`, `utils/`), completed client-side audio/video meeting recording with multi-track mixing, deployed real-time in-call Agenda Timeboxing and Speaker Turn-Taking FIFO moderation, and delivered zero-cloud peer-to-peer encrypted file and document sharing over WebRTC `RTCDataChannel`.
 * **Phase 2 (Cloud Asset Storage):** Transition from Base64 data URIs in SQLite to object storage (AWS S3 or Cloudflare R2), storing clean CDN URLs in the database.
 * **Phase 3 (Enterprise Calling & SFU):** Introduce an optional Selective Forwarding Unit (SFU) for large-scale conferences with 8+ participants, while preserving lightweight P2P mesh for 1:1 and small team calls.
 

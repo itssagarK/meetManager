@@ -1,6 +1,7 @@
 import React from 'react';
 import RemoteParticipantTile from '../common/RemoteParticipantTile.jsx';
 import AgendaQueuePanel from './AgendaQueuePanel.jsx';
+import { FileTransferPanel } from './FileTransferPanel.jsx';
 import { formatMeetingDuration } from '../../utils/dateUtils.js';
 
 export const ConferenceOverlay = ({
@@ -63,6 +64,7 @@ export const ConferenceOverlay = ({
   onStopRecording,
   agendaState,
   speakerState,
+  fileTransferState,
   localPeerId,
 }) => {
   if (!activeCallRoom) return null;
@@ -643,6 +645,22 @@ export const ConferenceOverlay = ({
                 )}
               </button>
 
+              {/* P2P File & Document Sharing */}
+              <button
+                type="button"
+                className={`meet-dock-btn ${meetingDrawerTab === 'files' ? 'btn-active-blue' : ''}`}
+                onClick={() => {
+                  setMeetingDrawerTab((prev) => (prev === 'files' ? null : 'files'));
+                  if (fileTransferState?.markFilesAsRead) fileTransferState.markFilesAsRead();
+                }}
+                title="P2P File & Document Sharing"
+              >
+                <span className="material-symbols-outlined">folder_shared</span>
+                {fileTransferState?.files && fileTransferState.files.length > 0 && (
+                  <span className="dock-badge">{fileTransferState.files.length}</span>
+                )}
+              </button>
+
               {/* Meeting Info */}
               <button
                 type="button"
@@ -672,6 +690,7 @@ export const ConferenceOverlay = ({
                     {meetingDrawerTab === 'chat' && 'In-call messages'}
                     {meetingDrawerTab === 'people' && `People (${connectedPeers.length + 1})`}
                     {meetingDrawerTab === 'agenda' && 'Agenda & Speaker Queue'}
+                    {meetingDrawerTab === 'files' && 'P2P Shared Files & Documents'}
                     {meetingDrawerTab === 'info' && 'Meeting details'}
                   </h3>
                   <div className="meet-drawer-hdr-actions">
@@ -699,6 +718,20 @@ export const ConferenceOverlay = ({
                         title="Agenda & Speaker Queue"
                       >
                         <span className="material-symbols-outlined">checklist</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`drawer-tab-btn ${meetingDrawerTab === 'files' ? 'active' : ''}`}
+                        onClick={() => {
+                          setMeetingDrawerTab('files');
+                          if (fileTransferState?.markFilesAsRead) fileTransferState.markFilesAsRead();
+                        }}
+                        title="P2P Shared Files"
+                      >
+                        <span className="material-symbols-outlined">folder_shared</span>
+                        {fileTransferState?.unreadFilesCount > 0 && (
+                          <span className="tab-badge">{fileTransferState.unreadFilesCount}</span>
+                        )}
                       </button>
                       <button
                         type="button"
@@ -974,6 +1007,15 @@ export const ConferenceOverlay = ({
                       localPeerId={localPeerId}
                       isLocalHandRaised={isHandRaised}
                       onToggleRaiseHand={handleToggleRaiseHand}
+                    />
+                  )}
+
+                  {/* P2P File Sharing Tab */}
+                  {meetingDrawerTab === 'files' && fileTransferState && (
+                    <FileTransferPanel
+                      fileTransferState={fileTransferState}
+                      connectedPeersCount={connectedPeers.length}
+                      onPreviewImage={(url) => setActiveImageLightbox && setActiveImageLightbox(url)}
                     />
                   )}
 
