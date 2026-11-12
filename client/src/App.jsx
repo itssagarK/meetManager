@@ -32,6 +32,7 @@ import useMeetingRecorder from './hooks/useMeetingRecorder.js';
 import useAgendaTimer from './hooks/useAgendaTimer.js';
 import useSpeakerQueue from './hooks/useSpeakerQueue.js';
 import useFileTransfer from './hooks/useFileTransfer.js';
+import useWhiteboard from './hooks/useWhiteboard.js';
 
 function App() {
   // Multi-Tenant Workspace State
@@ -228,6 +229,98 @@ function App() {
   const speakerState = useSpeakerQueue({
     onBroadcastSpeakerQueue: broadcastSpeakerQueueToRoom,
   });
+
+  const broadcastWhiteboardDraw = useCallback(
+    (element) => {
+      if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN && activeCallRoom) {
+        wsSignalingRef.current.send(
+          JSON.stringify({
+            type: 'whiteboard-draw',
+            roomId: activeCallRoom,
+            element,
+          })
+        );
+      }
+    },
+    [activeCallRoom]
+  );
+
+  const broadcastWhiteboardClear = useCallback(() => {
+    if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN && activeCallRoom) {
+      wsSignalingRef.current.send(
+        JSON.stringify({
+          type: 'whiteboard-clear',
+          roomId: activeCallRoom,
+        })
+      );
+    }
+  }, [activeCallRoom]);
+
+  const broadcastWhiteboardSticky = useCallback(
+    (action, sticky, stickyId) => {
+      if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN && activeCallRoom) {
+        wsSignalingRef.current.send(
+          JSON.stringify({
+            type: 'whiteboard-sticky',
+            roomId: activeCallRoom,
+            action,
+            sticky,
+            stickyId,
+          })
+        );
+      }
+    },
+    [activeCallRoom]
+  );
+
+  const broadcastWhiteboardLaser = useCallback(
+    (point) => {
+      if (wsSignalingRef.current && wsSignalingRef.current.readyState === WebSocket.OPEN && activeCallRoom) {
+        wsSignalingRef.current.send(
+          JSON.stringify({
+            type: 'whiteboard-laser',
+            roomId: activeCallRoom,
+            point,
+          })
+        );
+      }
+    },
+    [activeCallRoom]
+  );
+
+  const [isWhiteboardOpen, setIsWhiteboardOpen] = useState(false);
+
+  const whiteboardState = useWhiteboard({
+    localPeerId: myPeerId,
+    localName: guestName.trim() || (isHostInCall ? 'Host' : 'You'),
+    onBroadcastDraw: broadcastWhiteboardDraw,
+    onBroadcastClear: broadcastWhiteboardClear,
+    onBroadcastSticky: broadcastWhiteboardSticky,
+    onBroadcastLaser: broadcastWhiteboardLaser,
+  });
+
+  const handleSaveWhiteboardToMeetingNotes = async (pngDataUrl) => {
+    if (!activeCallRoom) return;
+    const targetMeeting = items.find((i) => i.link && i.link.includes(activeCallRoom));
+    if (!targetMeeting) {
+      showToast('Whiteboard snapshot generated!');
+      return;
+    }
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const noteText = `\n\n### ✏️ Whiteboard Snapshot (${timestamp})\n![Whiteboard Diagram](${pngDataUrl})`;
+    const updated = { ...targetMeeting, notes: (targetMeeting.notes || '') + noteText };
+    setItems((prev) => prev.map((i) => (i.id === targetMeeting.id ? updated : i)));
+    try {
+      await fetchWithWorkspace(`${API_URL}/api/meetings/${targetMeeting.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      });
+      showToast('Whiteboard snapshot attached to scheduled meeting notes!');
+    } catch {
+      showToast('Saved locally to meeting notes');
+    }
+  };
 
   const fileTransferState = useFileTransfer({
     localPeerId: myPeerId,
@@ -1488,6 +1581,18 @@ function App() {
               speakerQueue: data.speakerQueue,
               activeSpeaker: data.activeSpeaker,
             });
+          } else if (data.type === 'whiteboard-draw') {
+            if (data.element) {
+              whiteboardState.handleRemoteDraw(data.element);
+            }
+          } else if (data.type === 'whiteboard-clear') {
+            whiteboardState.handleRemoteClear();
+          } else if (data.type === 'whiteboard-sticky') {
+            whiteboardState.handleRemoteSticky(data.action, data.sticky, data.stickyId);
+          } else if (data.type === 'whiteboard-laser') {
+            whiteboardState.handleRemoteLaser(data.point, data.senderPeerId, data.senderName);
+          } else if (data.type === 'whiteboard-sync') {
+            whiteboardState.handleRemoteSync(data.elements, data.stickies);
           } else if (data.type === 'chat-message') {
             if (data.message) {
               setChatMessages((prev) => {
@@ -1669,6 +1774,7 @@ function App() {
     setPinnedParticipant(null);
     setIsLocalSpeaking(false);
     setIsCallFullscreen(false);
+    setIsWhiteboardOpen(false);
 
     if (window.location.search.includes('room=')) {
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -3897,6 +4003,10 @@ function App() {
         agendaState={agendaState}
         speakerState={speakerState}
         fileTransferState={fileTransferState}
+        whiteboardState={whiteboardState}
+        isWhiteboardOpen={isWhiteboardOpen}
+        setIsWhiteboardOpen={setIsWhiteboardOpen}
+        onSaveWhiteboardToNotes={handleSaveWhiteboardToMeetingNotes}
         localPeerId={myPeerId}
       />
 

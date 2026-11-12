@@ -2,6 +2,7 @@ import React from 'react';
 import RemoteParticipantTile from '../common/RemoteParticipantTile.jsx';
 import AgendaQueuePanel from './AgendaQueuePanel.jsx';
 import { FileTransferPanel } from './FileTransferPanel.jsx';
+import { WhiteboardOverlay } from './WhiteboardOverlay.jsx';
 import { formatMeetingDuration } from '../../utils/dateUtils.js';
 
 export const ConferenceOverlay = ({
@@ -65,6 +66,10 @@ export const ConferenceOverlay = ({
   agendaState,
   speakerState,
   fileTransferState,
+  whiteboardState,
+  isWhiteboardOpen,
+  setIsWhiteboardOpen,
+  onSaveWhiteboardToNotes,
   localPeerId,
 }) => {
   if (!activeCallRoom) return null;
@@ -307,6 +312,15 @@ export const ConferenceOverlay = ({
 
           {/* Center Stage Body */}
           <div className="meet-stage-body">
+            {isWhiteboardOpen && whiteboardState && (
+              <WhiteboardOverlay
+                whiteboardState={whiteboardState}
+                connectedPeersCount={connectedPeers.length}
+                onClose={() => setIsWhiteboardOpen && setIsWhiteboardOpen(false)}
+                onSaveToMeetingNotes={onSaveWhiteboardToNotes}
+                showToast={showToast}
+              />
+            )}
             {(() => {
               const totalCallCount = connectedPeers.length + 1;
               const gridCountClass = totalCallCount === 1
@@ -658,6 +672,19 @@ export const ConferenceOverlay = ({
                 <span className="material-symbols-outlined">folder_shared</span>
                 {fileTransferState?.files && fileTransferState.files.length > 0 && (
                   <span className="dock-badge">{fileTransferState.files.length}</span>
+                )}
+              </button>
+
+              {/* Collaborative Whiteboard Stage */}
+              <button
+                type="button"
+                className={`meet-dock-btn ${isWhiteboardOpen ? 'btn-active-blue' : ''}`}
+                onClick={() => setIsWhiteboardOpen && setIsWhiteboardOpen((prev) => !prev)}
+                title={isWhiteboardOpen ? 'Hide Whiteboard Canvas' : 'Collaborative Whiteboard & Annotation Stage'}
+              >
+                <span className="material-symbols-outlined">draw</span>
+                {whiteboardState?.elements && whiteboardState.elements.length > 0 && (
+                  <span className="dock-badge">{whiteboardState.elements.length}</span>
                 )}
               </button>
 

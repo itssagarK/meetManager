@@ -1092,6 +1092,14 @@ wss.on('connection', (ws) => {
             activeSpeaker: room.activeSpeaker || null,
           }));
         }
+        if (room.whiteboardElements || room.whiteboardStickies) {
+          ws.send(JSON.stringify({
+            type: 'whiteboard-sync',
+            roomId: cleanRoom,
+            elements: room.whiteboardElements || [],
+            stickies: room.whiteboardStickies || [],
+          }));
+        }
 
         // 2. Broadcast new peer's arrival to all existing participants in the room
         const newPeerPayload = JSON.stringify({
@@ -1296,6 +1304,92 @@ wss.on('connection', (ws) => {
           room.participants.forEach((otherP, pId) => {
             if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
               otherP.ws.send(syncPayload);
+            }
+          });
+        }
+      } else if (type === 'whiteboard-draw') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom && rooms.has(targetRoom)) {
+          const room = rooms.get(targetRoom);
+          if (!room.whiteboardElements) room.whiteboardElements = [];
+          if (data.element) {
+            room.whiteboardElements.push(data.element);
+            if (room.whiteboardElements.length > 5000) {
+              room.whiteboardElements.splice(0, room.whiteboardElements.length - 5000);
+            }
+          }
+          const drawPayload = JSON.stringify({
+            type: 'whiteboard-draw',
+            roomId: targetRoom,
+            element: data.element,
+            senderPeerId: currentPeerId,
+          });
+          room.participants.forEach((otherP, pId) => {
+            if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
+              otherP.ws.send(drawPayload);
+            }
+          });
+        }
+      } else if (type === 'whiteboard-clear') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom && rooms.has(targetRoom)) {
+          const room = rooms.get(targetRoom);
+          room.whiteboardElements = [];
+          room.whiteboardStickies = [];
+          const clearPayload = JSON.stringify({
+            type: 'whiteboard-clear',
+            roomId: targetRoom,
+            senderPeerId: currentPeerId,
+          });
+          room.participants.forEach((otherP, pId) => {
+            if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
+              otherP.ws.send(clearPayload);
+            }
+          });
+        }
+      } else if (type === 'whiteboard-sticky') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom && rooms.has(targetRoom)) {
+          const room = rooms.get(targetRoom);
+          if (!room.whiteboardStickies) room.whiteboardStickies = [];
+          if (data.action === 'upsert' && data.sticky) {
+            const idx = room.whiteboardStickies.findIndex((s) => s.id === data.sticky.id);
+            if (idx >= 0) {
+              room.whiteboardStickies[idx] = data.sticky;
+            } else {
+              room.whiteboardStickies.push(data.sticky);
+            }
+          } else if (data.action === 'delete' && data.stickyId) {
+            room.whiteboardStickies = room.whiteboardStickies.filter((s) => s.id !== data.stickyId);
+          }
+          const stickyPayload = JSON.stringify({
+            type: 'whiteboard-sticky',
+            roomId: targetRoom,
+            action: data.action,
+            sticky: data.sticky,
+            stickyId: data.stickyId,
+            senderPeerId: currentPeerId,
+          });
+          room.participants.forEach((otherP, pId) => {
+            if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
+              otherP.ws.send(stickyPayload);
+            }
+          });
+        }
+      } else if (type === 'whiteboard-laser') {
+        const targetRoom = (roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom && rooms.has(targetRoom)) {
+          const room = rooms.get(targetRoom);
+          const laserPayload = JSON.stringify({
+            type: 'whiteboard-laser',
+            roomId: targetRoom,
+            point: data.point,
+            senderPeerId: currentPeerId,
+            senderName: ws.peerName || 'Peer',
+          });
+          room.participants.forEach((otherP, pId) => {
+            if (pId !== currentPeerId && otherP.ws.readyState === WebSocket.OPEN) {
+              otherP.ws.send(laserPayload);
             }
           });
         }

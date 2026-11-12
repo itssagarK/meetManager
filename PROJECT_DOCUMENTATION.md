@@ -183,6 +183,7 @@ client/src/
 │   ├── useAgendaTimer.js                 # In-call agenda timeboxing, countdown, Web Audio chimes & step navigation
 │   ├── useSpeakerQueue.js                # FIFO hand-raise queue, speaker countdown & floor turn-taking management
 │   ├── useFileTransfer.js                # WebRTC RTCDataChannel P2P file & document streaming engine
+│   ├── useWhiteboard.js                  # Collaborative whiteboard canvas, normalized coordinates & laser pointers
 │   └── useMeetingRecorder.js             # Client-side audio/video mixing & MediaRecorder pipeline
 └── components/
     ├── common/                           # Shared Atomic UI Blocks
@@ -211,6 +212,7 @@ client/src/
     └── conference/                       # Real-Time WebRTC Calling Engine
         ├── AgendaQueuePanel.jsx          # In-call Agenda Timebox checklist & Speaker Turn-Taking FIFO queue drawer
         ├── FileTransferPanel.jsx         # P2P encrypted file dropper, transfer progress & instant downloader
+        ├── WhiteboardOverlay.jsx         # Interactive collaborative canvas, shapes, sticky notes & laser stage
         └── ConferenceOverlay.jsx         # Google Meet calling stage, PiP mode, top bar agenda pill & pill dock controls
 ```
 
@@ -765,6 +767,68 @@ flowchart TD
    - **Instant Download & Lightbox Preview:** Completed transfers expose a 1-click native download link with original filenames, plus lightbox image previewing for image files.
    - **Notification Chimes & Unread Badges:** Unread file counters on side drawer tabs and dock icons, combined with Web Audio chimes upon arrival.
 
+### 5.9 In-Call Collaborative Whiteboard & Stage Annotator
+PCS Meet Manager features a **Real-Time Collaborative Whiteboard & Stage Annotation Engine** built for architectural sketching, brainstorm diagramming, and interactive presentation marking during live video calls:
+
+```mermaid
+flowchart TD
+    subgraph LocalDrawing["Local User Interaction"]
+        PointerInput["Mouse / Stylus / Touch Coordinates\n(Normalized 0.0 to 1.0)"]
+        ToolEngine["Tool Dispatcher\n(Pen, Highlighter, Laser, Shapes, Sticky)"]
+        LocalCanvas["Immediate Local Canvas Render\n(Zero Perceived Lag)"]
+    end
+
+    subgraph SyncTransport["Real-Time Synchronization Layer (/ws)"]
+        DrawPacket["whiteboard-draw (stroke / shape)"]
+        LaserPacket["whiteboard-laser (ephemeral beacon)"]
+        StickyPacket["whiteboard-sticky (upsert / delete)"]
+        SyncPacket["whiteboard-sync (state delivery for new joiners)"]
+    end
+
+    subgraph RemotePeers["Remote Conference Participants"]
+        RemoteRender["Proportional Canvas Scaling\n(Responsive Render on Any Display)"]
+        LaserDecay["Laser Glowing Radial Trail\n(Auto-fades in 1.4s)"]
+        StickyLayer["Draggable Markdown Sticky Notes"]
+    end
+
+    subgraph ExportIntegration["Export & Workspace Persistence"]
+        ExportPNG["Download 1080p PNG Snapshot"]
+        MeetingNotesAttach["Auto-attach Markdown Image Link\nto Scheduled Meeting Notes in SQLite"]
+    end
+
+    PointerInput --> ToolEngine
+    ToolEngine --> LocalCanvas
+    ToolEngine --> DrawPacket
+    ToolEngine --> LaserPacket
+    ToolEngine --> StickyPacket
+
+    DrawPacket --> RemoteRender
+    LaserPacket --> LaserDecay
+    StickyPacket --> StickyLayer
+    SyncPacket --> RemoteRender
+
+    LocalCanvas --> ExportPNG
+    LocalCanvas --> MeetingNotesAttach
+```
+
+1. **Normalized Proportional Coordinate System:**
+   - Raw pointer events are converted into normalized relative coordinates ($x \in [0, 1], y \in [0, 1]$) rather than fixed pixel dimensions.
+   - When rendering, the canvas dynamically scales elements to its actual container width and height. This guarantees that an architectural diagram looks identical whether viewed on a 400px Chrome Side Panel, a 13-inch laptop, or a 4K external boardroom display.
+
+2. **Creative Drawing & Annotation Primitives:**
+   - **Freehand Pen & Highlighter:** Smooth polyline rendering with customizable stroke widths ($2\text{px}$, $4\text{px}$, $8\text{px}$, $14\text{px}$) and alpha transparency ($35\%$ opacity for highlighters).
+   - **Geometric Shapes:** Live preview and rendering of straight lines, directional arrows with arrowheads, rectangles, and ellipses (with optional semi-transparent fill).
+   - **Proportional Point Eraser:** Proximity-based hit-testing ($3.5\%$ radius) to erase strokes and shapes cleanly.
+   - **Collaborative Laser Pointer:** Real-time glowing beacon with radial gradient and participant name tag that automatically decays after $1.4\text{ seconds}$ without permanently marking the canvas.
+
+3. **Draggable Sticky Notes Layer:**
+   - Color-coded notes (`yellow`, `blue`, `green`, `pink`) with author labels, live editable text areas, and drag handles.
+   - Position updates are broadcast via `whiteboard-sticky` events and synchronized across all peer viewports.
+
+4. **Snapshot Export & Workspace Integration:**
+   - **1-Click 1080p PNG Export:** Renders an offscreen $1920 \times 1080$ canvas with dark grid background, strokes, shapes, and formatted sticky notes, downloading a clean PNG file.
+   - **Save to Meeting Notes:** Direct integration with the SQLite database—attaches the whiteboard image as a Markdown attachment directly into the active scheduled meeting's notes.
+
 ---
 
 ## 6. Corporate Knocking Lobby & Gatekeeping Handshake
@@ -1047,6 +1111,11 @@ The WebSocket server operates at path `/ws` over RFC 6455 protocols.
 | `raise-hand` | Client $\rightarrow$ Server | `{ type, roomId, senderName, isRaised }` | Broadcasts hand-raise status notification across room participants. |
 | `agenda-sync` | Bidirectional | `{ type, roomId, agendaItems, activeTopicIndex, isTimerActive, remainingSeconds, isOvertime }` | Synchronizes active agenda topic timebox, countdown state, and completion status across all meeting peers. |
 | `speaker-queue-sync` | Bidirectional | `{ type, roomId, speakerQueue, activeSpeaker }` | Synchronizes FIFO hand-raise turn-taking queue and active floor speaker countdown across all meeting peers. |
+| `whiteboard-draw` | Bidirectional | `{ type, roomId, element: { id, type, tool, color, width, points, ... } }` | Relays drawing strokes, shapes, and eraser actions to all in-call whiteboard canvases. |
+| `whiteboard-clear` | Bidirectional | `{ type, roomId }` | Clears all drawing elements and sticky notes across all connected peers. |
+| `whiteboard-sticky` | Bidirectional | `{ type, roomId, action: 'upsert'\|'delete', sticky, stickyId }` | Synchronizes draggable markdown sticky notes position, color, and content across peers. |
+| `whiteboard-laser` | Bidirectional | `{ type, roomId, point: { x, y } }` | Relays live ephemeral laser pointer beacon coordinates with radial glowing decay. |
+| `whiteboard-sync` | Server $\rightarrow$ Client | `{ type, roomId, elements, stickies }` | Transmits current cumulative whiteboard state and sticky notes to newly joined participants. |
 | `chat-join` | Client $\rightarrow$ Server | `{ type, roomId }` | Subscribes socket to room chat; broadcasts updated `chat-presence` count. |
 | `chat-typing` | Client $\rightarrow$ Server | `{ type, roomId, senderName, isTyping }` | Relays ephemeral typing indicators to room subscribers. |
 | `chat-message` | Bidirectional | `{ type, roomId, message: {...} }` | Persists message in SQLite and broadcasts to all room subscribers. |
@@ -1221,11 +1290,11 @@ docker run -d \
 
 ```mermaid
 flowchart LR
-    Phase1["Phase 1: Calling Engine & Modularization [COMPLETED]\n• Split App.jsx into feature subdirectories\n• Native Client-Side Recording & Mixer\n• Agenda Timeboxing & Speaker Turn-Taking\n• P2P Encrypted File Sharing (RTCDataChannel)"] --> Phase2["Phase 2: Scalability & Cloud Assets\n• Offload base64 images to S3/Cloudflare R2\n• Add JWT-based multi-tenancy\n• Automated SQLite schema migrations"]
+    Phase1["Phase 1: Calling Suite & Productivity [COMPLETED]\n• Split App.jsx into modular components\n• Client-Side Recording & Multi-Audio Mixer\n• Agenda Timeboxing & Speaker Turn-Taking\n• P2P Encrypted File Sharing (RTCDataChannel)\n• Real-Time Collaborative Whiteboard Stage"] --> Phase2["Phase 2: Scalability & Cloud Assets\n• Offload base64 images to S3/Cloudflare R2\n• Add JWT-based multi-tenancy\n• Automated SQLite schema migrations"]
     Phase2 --> Phase3["Phase 3: Enterprise Calling Engine\n• Optional SFU Relay (LiveKit / Mediasoup)\n• Cloud meeting archiving\n• AI meeting transcription & action items"]
 ```
 
-* **Phase 1 (Component Modularization & Calling Engine) — [COMPLETED]:** Decomposed the monolithic frontend into focused components (`components/views`, `components/conference`, `components/chat`, `components/modals`, `components/common`, `config/`, `utils/`), completed client-side audio/video meeting recording with multi-track mixing, deployed real-time in-call Agenda Timeboxing and Speaker Turn-Taking FIFO moderation, and delivered zero-cloud peer-to-peer encrypted file and document sharing over WebRTC `RTCDataChannel`.
+* **Phase 1 (Component Modularization & Real-Time Calling Suite) — [COMPLETED]:** Decomposed the monolithic frontend into focused components (`components/views`, `components/conference`, `components/chat`, `components/modals`, `components/common`, `config/`, `utils/`), completed client-side audio/video meeting recording with multi-track mixing, deployed real-time in-call Agenda Timeboxing and Speaker Turn-Taking FIFO moderation, engineered zero-cloud peer-to-peer encrypted file and document sharing over WebRTC `RTCDataChannel`, and launched the full-featured collaborative whiteboard stage with synchronized drawing, sticky notes, and laser pointer.
 * **Phase 2 (Cloud Asset Storage):** Transition from Base64 data URIs in SQLite to object storage (AWS S3 or Cloudflare R2), storing clean CDN URLs in the database.
 * **Phase 3 (Enterprise Calling & SFU):** Introduce an optional Selective Forwarding Unit (SFU) for large-scale conferences with 8+ participants, while preserving lightweight P2P mesh for 1:1 and small team calls.
 
