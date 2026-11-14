@@ -3939,6 +3939,13 @@ function App() {
         isMeeting={isMeeting}
         setSelectedDate={setSelectedDate}
         handleOpenEdit={handleOpenEdit}
+        handleOpenChatRoom={(roomId) => {
+          setActiveChatRoom(roomId);
+          setIsGlobalChatMode(true);
+          setIsPaletteOpen(false);
+          showToast(`Switched to room chat: #${roomId}`);
+        }}
+        workspaceId={workspaceId}
       />
 
       {/* Google Meet Professional Calling Stage & Floating Controls */}

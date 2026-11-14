@@ -98,6 +98,75 @@ export const MIGRATIONS = [
       }
     },
   },
+  {
+    version: 5,
+    name: '005_fts5_full_text_search',
+    up: (db) => {
+      // 1. Meetings Full-Text Search (title, notes, attendees)
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts_meetings USING fts5(
+          title,
+          notes,
+          attendees,
+          content='meetings',
+          content_rowid='id'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS fts_meetings_ai AFTER INSERT ON meetings BEGIN
+          INSERT INTO fts_meetings(rowid, title, notes, attendees)
+          VALUES (new.id, coalesce(new.title, ''), coalesce(new.notes, ''), coalesce(new.attendees, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS fts_meetings_ad AFTER DELETE ON meetings BEGIN
+          INSERT INTO fts_meetings(fts_meetings, rowid, title, notes, attendees)
+          VALUES ('delete', old.id, coalesce(old.title, ''), coalesce(old.notes, ''), coalesce(old.attendees, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS fts_meetings_au AFTER UPDATE ON meetings BEGIN
+          INSERT INTO fts_meetings(fts_meetings, rowid, title, notes, attendees)
+          VALUES ('delete', old.id, coalesce(old.title, ''), coalesce(old.notes, ''), coalesce(old.attendees, ''));
+          INSERT INTO fts_meetings(rowid, title, notes, attendees)
+          VALUES (new.id, coalesce(new.title, ''), coalesce(new.notes, ''), coalesce(new.attendees, ''));
+        END;
+      `);
+
+      // 2. Room Messages Full-Text Search (content, sender_name, room_id)
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts_room_messages USING fts5(
+          content,
+          sender_name,
+          room_id,
+          content='room_messages',
+          content_rowid='id'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS fts_room_messages_ai AFTER INSERT ON room_messages BEGIN
+          INSERT INTO fts_room_messages(rowid, content, sender_name, room_id)
+          VALUES (new.id, coalesce(new.content, ''), coalesce(new.sender_name, ''), coalesce(new.room_id, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS fts_room_messages_ad AFTER DELETE ON room_messages BEGIN
+          INSERT INTO fts_room_messages(fts_room_messages, rowid, content, sender_name, room_id)
+          VALUES ('delete', old.id, coalesce(old.content, ''), coalesce(old.sender_name, ''), coalesce(old.room_id, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS fts_room_messages_au AFTER UPDATE ON room_messages BEGIN
+          INSERT INTO fts_room_messages(fts_room_messages, rowid, content, sender_name, room_id)
+          VALUES ('delete', old.id, coalesce(old.content, ''), coalesce(old.sender_name, ''), coalesce(old.room_id, ''));
+          INSERT INTO fts_room_messages(rowid, content, sender_name, room_id)
+          VALUES (new.id, coalesce(new.content, ''), coalesce(new.sender_name, ''), coalesce(new.room_id, ''));
+        END;
+      `);
+
+      // 3. Populate / Rebuild indices for existing rows
+      try {
+        db.exec("INSERT INTO fts_meetings(fts_meetings) VALUES('rebuild');");
+        db.exec("INSERT INTO fts_room_messages(fts_room_messages) VALUES('rebuild');");
+      } catch (e) {
+        console.warn('[FTS5 Migration] Initial index rebuild notice:', e.message);
+      }
+    },
+  },
 ];
 
 /**

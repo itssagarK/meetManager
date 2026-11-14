@@ -18,6 +18,8 @@ export const AnalyticsView = ({
   const [recentAssets, setRecentAssets] = useState([]);
   const [isMigrating, setIsMigrating] = useState(false);
   const [migrationMessage, setMigrationMessage] = useState(null);
+  const [searchStatus, setSearchStatus] = useState(null);
+  const [isRebuildingFts, setIsRebuildingFts] = useState(false);
 
   const formatBytes = (bytes) => {
     if (!bytes || bytes === 0) return '0 B';
@@ -25,6 +27,36 @@ export const AnalyticsView = ({
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const fetchSearchStatus = useCallback(async () => {
+    try {
+      const res = await fetch(getApiUrl('/api/search/status'));
+      if (res.ok) {
+        const data = await res.json();
+        setSearchStatus(data);
+      }
+    } catch (err) {
+      console.warn('Failed to load search status:', err);
+    }
+  }, []);
+
+  const handleRebuildFtsIndex = async () => {
+    try {
+      setIsRebuildingFts(true);
+      const res = await fetch(getApiUrl('/api/search/rebuild'), { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        if (showToast) showToast('✅ SQLite FTS5 search indexes rebuilt successfully!');
+        fetchSearchStatus();
+      } else {
+        if (showToast) showToast(`❌ Rebuild error: ${data.error}`);
+      }
+    } catch (err) {
+      if (showToast) showToast(`❌ Rebuild error: ${err.message}`);
+    } finally {
+      setIsRebuildingFts(false);
+    }
   };
 
   const fetchStorageStatus = useCallback(async () => {
@@ -49,7 +81,8 @@ export const AnalyticsView = ({
 
   useEffect(() => {
     fetchStorageStatus();
-  }, [fetchStorageStatus]);
+    fetchSearchStatus();
+  }, [fetchStorageStatus, fetchSearchStatus]);
 
   const handleMigrate = async () => {
     try {
@@ -297,6 +330,89 @@ export const AnalyticsView = ({
             </div>
           </div>
         )}
+      </div>
+
+      {/* SQLite FTS5 Full-Text Search Engine Section */}
+      <div className="storage-management-section">
+        <div className="storage-management-header">
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <h3 className="storage-title">SQLite FTS5 Full-Text Search Engine</h3>
+              <span className="storage-badge badge-s3">
+                ⚡ BM25 Ranked
+              </span>
+            </div>
+            <p className="storage-subtitle">
+              High-performance inverted full-text index across agendas, markdown notes, attendees, and room chat logs.
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              className="btn-storage-refresh"
+              onClick={fetchSearchStatus}
+              title="Refresh Search Metrics"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                refresh
+              </span>
+            </button>
+            <button
+              type="button"
+              className="btn-storage-migrate"
+              onClick={handleRebuildFtsIndex}
+              disabled={isRebuildingFts}
+              title="Re-index all meetings and room messages"
+            >
+              <span className={`material-symbols-outlined ${isRebuildingFts ? 'spinning' : ''}`} style={{ fontSize: '18px' }}>
+                {isRebuildingFts ? 'sync' : 'build'}
+              </span>
+              {isRebuildingFts ? 'Rebuilding Index...' : 'Rebuild Search Index'}
+            </button>
+          </div>
+        </div>
+
+        <div className="storage-metrics-grid">
+          <div className="storage-metric-box">
+            <span className="storage-metric-label">Indexing Engine</span>
+            <div className="storage-metric-val">
+              FTS5
+            </div>
+            <span className="storage-metric-sub">
+              {searchStatus?.algorithm || 'BM25 Ranking'}
+            </span>
+          </div>
+
+          <div className="storage-metric-box">
+            <span className="storage-metric-label">Indexed Agendas &amp; Tasks</span>
+            <div className="storage-metric-val">
+              {searchStatus?.indexedMeetings ?? 0}
+            </div>
+            <span className="storage-metric-sub">
+              Titles, notes, &amp; attendees
+            </span>
+          </div>
+
+          <div className="storage-metric-box">
+            <span className="storage-metric-label">Indexed Chat Messages</span>
+            <div className="storage-metric-val">
+              {searchStatus?.indexedMessages ?? 0}
+            </div>
+            <span className="storage-metric-sub">
+              Global &amp; in-call room messages
+            </span>
+          </div>
+
+          <div className="storage-metric-box">
+            <span className="storage-metric-label">Tokenizer</span>
+            <div className="storage-metric-val" style={{ fontSize: '14px' }}>
+              Porter / Unicode61
+            </div>
+            <span className="storage-metric-sub">
+              Prefix &amp; root word stemming
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   );

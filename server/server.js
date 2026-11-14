@@ -439,6 +439,156 @@ app.post('/api/restore', (req, res) => {
   }
 });
 
+// Helper to sanitize and format user input for SQLite FTS5 prefix and token matching
+function sanitizeFtsQuery(query) {
+  if (!query || typeof query !== 'string') return '';
+  const cleaned = query.trim().replace(/[^\w\s\u00C0-\u017F\u0400-\u04FF]/gi, ' ').trim();
+  if (!cleaned) return '';
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return '';
+  return tokens.map((t) => `${t}*`).join(' ');
+}
+
+// SQLite FTS5 High-Performance Full-Text Search Endpoint
+app.get('/api/search', (req, res) => {
+  try {
+    const rawQuery = (req.query.q || '').trim();
+    const workspaceId = req.headers['x-workspace-id'] || req.query.workspace_id || 'default';
+    const scope = (req.query.scope || 'all').toLowerCase(); // 'all' | 'meetings' | 'messages'
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+
+    if (!rawQuery) {
+      return res.json({
+        query: '',
+        totalMatches: 0,
+        meetingsCount: 0,
+        messagesCount: 0,
+        meetings: [],
+        messages: [],
+      });
+    }
+
+    const ftsQuery = sanitizeFtsQuery(rawQuery);
+    if (!ftsQuery) {
+      return res.json({
+        query: rawQuery,
+        totalMatches: 0,
+        meetingsCount: 0,
+        messagesCount: 0,
+        meetings: [],
+        messages: [],
+      });
+    }
+
+    let matchingMeetings = [];
+    let matchingMessages = [];
+
+    // Search Meetings & Tasks
+    if (scope === 'all' || scope === 'meetings') {
+      try {
+        matchingMeetings = db.prepare(`
+          SELECT
+            m.id,
+            m.title,
+            m.date,
+            m.time,
+            m.link,
+            m.attendees,
+            m.notes,
+            m.priority,
+            m.status,
+            m.type,
+            m.workspace_id,
+            m.created_at,
+            snippet(fts_meetings, 0, '<mark>', '</mark>', '...', 8) AS match_title,
+            snippet(fts_meetings, 1, '<mark>', '</mark>', '...', 16) AS match_notes,
+            snippet(fts_meetings, 2, '<mark>', '</mark>', '...', 8) AS match_attendees,
+            fts_meetings.rank AS bm25_rank
+          FROM fts_meetings
+          JOIN meetings m ON m.id = fts_meetings.rowid
+          WHERE fts_meetings MATCH ? AND (m.workspace_id = ? OR ? = 'all')
+          ORDER BY bm25_rank ASC
+          LIMIT ?
+        `).all(ftsQuery, workspaceId, workspaceId, limit);
+      } catch (ftsErr) {
+        console.warn('FTS meetings query warning:', ftsErr.message);
+      }
+    }
+
+    // Search Room Messages (Global & In-Call Chat)
+    if (scope === 'all' || scope === 'messages') {
+      try {
+        matchingMessages = db.prepare(`
+          SELECT
+            rm.id,
+            rm.room_id,
+            rm.sender_name,
+            rm.sender_id,
+            rm.content,
+            rm.attachment_url,
+            rm.attachment_type,
+            rm.reply_to_id,
+            rm.reply_to_sender,
+            rm.reply_to_content,
+            rm.created_at,
+            snippet(fts_room_messages, 0, '<mark>', '</mark>', '...', 16) AS match_content,
+            snippet(fts_room_messages, 1, '<mark>', '</mark>', '...', 8) AS match_sender,
+            fts_room_messages.rank AS bm25_rank
+          FROM fts_room_messages
+          JOIN room_messages rm ON rm.id = fts_room_messages.rowid
+          WHERE fts_room_messages MATCH ? AND rm.is_deleted = 0
+          ORDER BY bm25_rank ASC
+          LIMIT ?
+        `).all(ftsQuery, limit);
+      } catch (ftsErr) {
+        console.warn('FTS messages query warning:', ftsErr.message);
+      }
+    }
+
+    return res.json({
+      query: rawQuery,
+      sanitizedFtsQuery: ftsQuery,
+      totalMatches: matchingMeetings.length + matchingMessages.length,
+      meetingsCount: matchingMeetings.length,
+      messagesCount: matchingMessages.length,
+      meetings: matchingMeetings,
+      messages: matchingMessages,
+    });
+  } catch (err) {
+    console.error('FTS search error:', err);
+    return res.status(500).json({ error: 'Search query execution failed', details: err.message });
+  }
+});
+
+// Rebuild SQLite FTS5 Indexes On Demand
+app.post('/api/search/rebuild', (req, res) => {
+  try {
+    db.exec("INSERT INTO fts_meetings(fts_meetings) VALUES('rebuild');");
+    db.exec("INSERT INTO fts_room_messages(fts_room_messages) VALUES('rebuild');");
+    return res.json({ success: true, message: 'FTS5 indexes rebuilt successfully.' });
+  } catch (err) {
+    console.error('FTS index rebuild error:', err);
+    return res.status(500).json({ error: 'Failed to rebuild search index', details: err.message });
+  }
+});
+
+// SQLite FTS5 Status Endpoint
+app.get('/api/search/status', (req, res) => {
+  try {
+    const meetingsCount = db.prepare('SELECT count(*) as c FROM fts_meetings').get().c;
+    const messagesCount = db.prepare('SELECT count(*) as c FROM fts_room_messages').get().c;
+    return res.json({
+      enabled: true,
+      algorithm: 'BM25 (Best Matching 25)',
+      engine: 'SQLite FTS5',
+      indexedMeetings: meetingsCount,
+      indexedMessages: messagesCount,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'FTS status check failed', details: err.message });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', database: 'connected' });

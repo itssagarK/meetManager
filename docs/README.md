@@ -275,6 +275,12 @@ To understand how data flows and how entities interact across PCS Meet Manager, 
 * **Automated Legacy Migration & Vacuuming:** On startup or on-demand (`POST /api/storage/migrate`), the engine scans SQLite messages for legacy Base64 `data:` URIs, uploads the binary buffers to cloud/disk storage, swaps database URLs for lightweight CDN links, records entries in `media_assets`, and runs an atomic SQLite `VACUUM` to reclaim disk space.
 * **Transactional Schema Migrations:** Managed through `server/migrations.js` with version tracking in `_schema_migrations`.
 
+#### 9. SQLite FTS5 Full-Text Inverted Indexing & BM25 Relevance Search
+* **High-Speed Inverted Indexing:** Powered by SQLite's native FTS5 extension with external content tables (`content='meetings'` and `content='room_messages'`) and automatic trigger synchronization on INSERT, UPDATE, and DELETE.
+* **BM25 Relevance Ranking:** Orders search hits based on the industry-standard Okapi BM25 statistical relevance ranking algorithm.
+* **Contextual Snippets & Highlighting:** Generates HTML `<mark>` snippets extracting match context around target keywords across meeting agendas, markdown checklists, attendee emails, and historical chat messages.
+* **Universal Command Center:** Integrated directly into `CommandPalette.jsx` (Ctrl+K or `/`) with scoped tab filters (`All`, `Meetings & Tasks`, `Chat History`, `Commands`) and direct jump navigation.
+
 ---
 
 ### 4.2 Physical SQLite Database ER Diagram
@@ -320,6 +326,20 @@ erDiagram
         DATETIME created_at "Message timestamp"
     }
 
+    FTS_MEETINGS {
+        INTEGER rowid PK "Shadow pointer to MEETINGS(id)"
+        TEXT title "Inverted index on title"
+        TEXT notes "Inverted index on notes"
+        TEXT attendees "Inverted index on attendees"
+    }
+
+    FTS_ROOM_MESSAGES {
+        INTEGER rowid PK "Shadow pointer to ROOM_MESSAGES(id)"
+        TEXT content "Inverted index on message body"
+        TEXT sender_name "Inverted index on sender"
+        TEXT room_id "Inverted index on room namespace"
+    }
+
     MEDIA_ASSETS {
         TEXT id PK "Unique asset identifier / UUID"
         TEXT original_name "Original upload file name"
@@ -342,6 +362,9 @@ erDiagram
     ROOM_MESSAGES ||--o{ ROOM_MESSAGES : "replies to (reply_to_id)"
     MEETINGS ||--o{ MEETING_ATTACHMENTS : "has"
     MEDIA_ASSETS ||--o{ MEETING_ATTACHMENTS : "referenced by"
+    MEETINGS ||--|| FTS_MEETINGS : "indexed in"
+    ROOM_MESSAGES ||--|| FTS_ROOM_MESSAGES : "indexed in"
+```
 ```
 
 ---
@@ -1132,6 +1155,9 @@ All endpoints are served from `/api` and consume/return `application/json`.
 | `GET` | `/api/storage/assets` | Standard | `?limit=50&offset=0` | `200` | Returns catalog of tracked media assets with provider metadata, mime types, and public URLs. |
 | `GET` | `/api/backup` | Standard | `x-workspace-id: string`, `?all=true` | `200` | Generates complete JSON database export of meetings, tasks, and room messages. |
 | `POST` | `/api/restore` | Strict | `?mode=merge\|replace`, `{ data: { meetings, room_messages } }` | `200` | Safely restores/merges database state within an atomic SQLite transaction. |
+| `GET` | `/api/search` | Standard | `?q=query&scope=all\|meetings\|messages&limit=25`, `x-workspace-id` | `200` | High-speed SQLite FTS5 search with BM25 relevance ranking and `<mark>` snippets. |
+| `GET` | `/api/search/status` | Standard | None | `200` | Returns SQLite FTS5 status, BM25 algorithm metrics, and indexed entity counts. |
+| `POST` | `/api/search/rebuild` | Strict | None | `200` | Rebuilds and synchronizes all FTS5 full-text shadow tables on demand. |
 
 ---
 
@@ -1348,12 +1374,12 @@ docker run -d \
 
 ```mermaid
 flowchart LR
-    Phase1["Phase 1: Calling Suite & Productivity [COMPLETED]\n• Split App.jsx into modular components\n• Client-Side Recording & Multi-Audio Mixer\n• Agenda Timeboxing & Speaker Turn-Taking\n• P2P Encrypted File Sharing (RTCDataChannel)\n• Real-Time Collaborative Whiteboard Stage"] --> Phase2["Phase 2: Scalability & Cloud Assets [COMPLETED]\n• Offload base64 images to S3/Cloudflare R2\n• Zero-dependency SigV4 signing engine\n• Automated SQLite schema migrations\n• Storage management & migration cockpit"]
+    Phase1["Phase 1: Calling Suite & Productivity [COMPLETED]\n• Split App.jsx into modular components\n• Client-Side Recording & Multi-Audio Mixer\n• Agenda Timeboxing & Speaker Turn-Taking\n• P2P Encrypted File Sharing (RTCDataChannel)\n• Real-Time Collaborative Whiteboard Stage"] --> Phase2["Phase 2: Scalability, Cloud Assets & Search [COMPLETED]\n• Offload base64 images to S3/Cloudflare R2\n• Zero-dependency SigV4 signing engine\n• Automated SQLite schema migrations\n• SQLite FTS5 Full-Text Search Engine\n• BM25 relevance ranking & snippet highlights\n• Storage & search management cockpits"]
     Phase2 --> Phase3["Phase 3: Enterprise Calling Engine\n• Optional SFU Relay (LiveKit / Mediasoup)\n• Cloud meeting archiving\n• AI meeting transcription & action items"]
 ```
 
 * **Phase 1 (Component Modularization & Real-Time Calling Suite) — [COMPLETED]:** Decomposed the monolithic frontend into focused components (`components/views`, `components/conference`, `components/chat`, `components/modals`, `components/common`, `config/`, `utils/`), completed client-side audio/video meeting recording with multi-track mixing, deployed real-time in-call Agenda Timeboxing and Speaker Turn-Taking FIFO moderation, engineered zero-cloud peer-to-peer encrypted file and document sharing over WebRTC `RTCDataChannel`, and launched the full-featured collaborative whiteboard stage with synchronized drawing, sticky notes, and laser pointer.
-* **Phase 2 (Cloud Asset Storage & Schema Migrations) — [COMPLETED]:** Built a multi-driver Object Storage Subsystem supporting Cloudflare R2 (zero egress fees), AWS S3 / MinIO, and high-speed local disk storage with native AWS SigV4 signing (0 external dependencies). Built versioned database schema migration engine (`_schema_migrations`), automated Base64-to-cloud asset migration with SQLite `VACUUM`, and an interactive Cloud Storage status & migration card in the executive Analytics view.
+* **Phase 2 (Cloud Asset Storage, Schema Migrations & FTS5 Search) — [COMPLETED]:** Built a multi-driver Object Storage Subsystem supporting Cloudflare R2 (zero egress fees), AWS S3 / MinIO, and high-speed local disk storage with native AWS SigV4 signing (0 external dependencies). Built versioned database schema migration engine (`_schema_migrations`), automated Base64-to-cloud asset migration with SQLite `VACUUM`, SQLite FTS5 full-text inverted indexing with BM25 statistical relevance ranking, contextual snippet extraction (`<mark>`), and an interactive Command Center search palette with scoped tabs (`All`, `Agendas & Tasks`, `Chat History`, `Commands`).
 * **Phase 3 (Enterprise Calling & SFU):** Introduce an optional Selective Forwarding Unit (SFU) for large-scale conferences with 8+ participants, while preserving lightweight P2P mesh for 1:1 and small team calls.
 
 ---
